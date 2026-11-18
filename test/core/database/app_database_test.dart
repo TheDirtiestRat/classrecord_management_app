@@ -150,4 +150,85 @@ void main() {
     final students = await database.getAllStudents();
     expect(students, hasLength(1));
   });
+
+  test(
+    'grade sheet stores missing and zero assessment scores separately',
+    () async {
+      final yearId = await database.createAcademicYear('2026-2027');
+      final semesterId = await database.createSemester(
+        academicYearId: yearId,
+        name: 'First Semester',
+      );
+      final subjectId = await database.createSubject(
+        code: 'IT101',
+        name: 'Introduction to Computing',
+        academicYearId: yearId,
+        semesterId: semesterId,
+      );
+      final studentId = await database.createStudent(
+        studentNumber: '2026-200',
+        firstName: 'Ana',
+        lastName: 'Reyes',
+      );
+      final period = (await database.getGradingPeriods()).first;
+      final assessmentId = await database.createAssessment(
+        subjectId: subjectId,
+        gradingPeriodId: period.id,
+        name: 'Quiz 1',
+        type: 'Quiz',
+        totalPossibleScore: 20,
+      );
+
+      await database.saveAssessmentScore(
+        assessmentId: assessmentId,
+        studentId: studentId,
+        score: null,
+      );
+      final missing = await database.getAssessmentScores(assessmentId);
+      expect(missing.single.score, isNull);
+
+      await database.saveAssessmentScore(
+        assessmentId: assessmentId,
+        studentId: studentId,
+        score: 0,
+      );
+      final zero = await database.getAssessmentScores(assessmentId);
+      expect(zero.single.score, 0);
+    },
+  );
+
+  test('grade sheet stores attendance codes by session', () async {
+    final yearId = await database.createAcademicYear('2026-2027');
+    final semesterId = await database.createSemester(
+      academicYearId: yearId,
+      name: 'First Semester',
+    );
+    final subjectId = await database.createSubject(
+      code: 'IT101',
+      name: 'Introduction to Computing',
+      academicYearId: yearId,
+      semesterId: semesterId,
+    );
+    final studentId = await database.createStudent(
+      studentNumber: '2026-201',
+      firstName: 'Leo',
+      lastName: 'Garcia',
+    );
+    final period = (await database.getGradingPeriods()).first;
+    final sessionId = await database.createAttendanceSession(
+      subjectId: subjectId,
+      gradingPeriodId: period.id,
+      sessionDate: '2026-11-18',
+    );
+
+    await database.saveAttendanceCode(
+      attendanceSessionId: sessionId,
+      studentId: studentId,
+      code: 'P',
+    );
+
+    final records = await database.getStudentAttendance(sessionId);
+    expect(records, hasLength(1));
+    expect(records.single.code, 'P');
+  });
 }

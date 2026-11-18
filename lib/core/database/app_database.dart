@@ -506,6 +506,263 @@ class AppDatabase extends _$AppDatabase {
     return rows.map((row) => row.readTable(students)).toList();
   }
 
+  Future<List<GradingPeriod>> getGradingPeriods() => (select(
+    gradingPeriods,
+  )..orderBy([(row) => OrderingTerm(expression: row.sortOrder)])).get();
+
+  Future<List<Assessment>> getAssessments({
+    required int subjectId,
+    required int gradingPeriodId,
+  }) =>
+      (select(assessments)
+            ..where(
+              (row) =>
+                  row.subjectId.equals(subjectId) &
+                  row.gradingPeriodId.equals(gradingPeriodId),
+            )
+            ..orderBy([
+              (row) => OrderingTerm(expression: row.sortOrder),
+              (row) => OrderingTerm(expression: row.id),
+            ]))
+          .get();
+
+  Future<int> createAssessment({
+    required int subjectId,
+    required int gradingPeriodId,
+    required String name,
+    required String type,
+    String? date,
+    required double totalPossibleScore,
+  }) {
+    return into(assessments).insert(
+      AssessmentsCompanion.insert(
+        subjectId: subjectId,
+        gradingPeriodId: gradingPeriodId,
+        name: name,
+        type: type,
+        date: Value(date),
+        totalPossibleScore: totalPossibleScore,
+        createdAt: DateTime.now().toIso8601String(),
+      ),
+    );
+  }
+
+  Future<bool> updateAssessment({
+    required int id,
+    required String name,
+    required String type,
+    String? date,
+    required double totalPossibleScore,
+  }) async {
+    final count = await (update(assessments)..where((row) => row.id.equals(id)))
+        .write(
+          AssessmentsCompanion(
+            name: Value(name),
+            type: Value(type),
+            date: Value(date),
+            totalPossibleScore: Value(totalPossibleScore),
+          ),
+        );
+    return count == 1;
+  }
+
+  Future<int> deleteAssessment(int id) =>
+      (delete(assessments)..where((row) => row.id.equals(id))).go();
+
+  Future<List<StudentAssessmentScore>> getAssessmentScores(int assessmentId) =>
+      (select(
+        studentAssessmentScores,
+      )..where((row) => row.assessmentId.equals(assessmentId))).get();
+
+  Future<void> saveAssessmentScore({
+    required int assessmentId,
+    required int studentId,
+    required double? score,
+  }) async {
+    final existing =
+        await (select(studentAssessmentScores)
+              ..where(
+                (row) =>
+                    row.assessmentId.equals(assessmentId) &
+                    row.studentId.equals(studentId),
+              )
+              ..limit(1))
+            .get();
+    final now = DateTime.now().toIso8601String();
+    if (existing.isEmpty) {
+      await into(studentAssessmentScores).insert(
+        StudentAssessmentScoresCompanion.insert(
+          assessmentId: assessmentId,
+          studentId: studentId,
+          score: Value(score),
+          updatedAt: Value(now),
+        ),
+      );
+    } else {
+      await (update(
+        studentAssessmentScores,
+      )..where((row) => row.id.equals(existing.first.id))).write(
+        StudentAssessmentScoresCompanion(
+          score: Value(score),
+          updatedAt: Value(now),
+        ),
+      );
+    }
+  }
+
+  Future<List<AttendanceSession>> getAttendanceSessions({
+    required int subjectId,
+    required int gradingPeriodId,
+  }) =>
+      (select(attendanceSessions)
+            ..where(
+              (row) =>
+                  row.subjectId.equals(subjectId) &
+                  row.gradingPeriodId.equals(gradingPeriodId),
+            )
+            ..orderBy([
+              (row) => OrderingTerm(expression: row.sortOrder),
+              (row) => OrderingTerm(expression: row.id),
+            ]))
+          .get();
+
+  Future<int> createAttendanceSession({
+    required int subjectId,
+    required int gradingPeriodId,
+    required String sessionDate,
+    String name = 'Attendance',
+  }) {
+    return into(attendanceSessions).insert(
+      AttendanceSessionsCompanion.insert(
+        subjectId: subjectId,
+        gradingPeriodId: gradingPeriodId,
+        sessionDate: sessionDate,
+        name: Value(name),
+      ),
+    );
+  }
+
+  Future<int> deleteAttendanceSession(int id) =>
+      (delete(attendanceSessions)..where((row) => row.id.equals(id))).go();
+
+  Future<void> saveAttendanceCode({
+    required int attendanceSessionId,
+    required int studentId,
+    required String code,
+  }) async {
+    final existing =
+        await (select(studentAttendance)
+              ..where(
+                (row) =>
+                    row.attendanceSessionId.equals(attendanceSessionId) &
+                    row.studentId.equals(studentId),
+              )
+              ..limit(1))
+            .get();
+    final now = DateTime.now().toIso8601String();
+    if (existing.isEmpty) {
+      await into(studentAttendance).insert(
+        StudentAttendanceCompanion.insert(
+          attendanceSessionId: attendanceSessionId,
+          studentId: studentId,
+          code: code,
+          updatedAt: Value(now),
+        ),
+      );
+    } else {
+      await (update(
+        studentAttendance,
+      )..where((row) => row.id.equals(existing.first.id))).write(
+        StudentAttendanceCompanion(code: Value(code), updatedAt: Value(now)),
+      );
+    }
+  }
+
+  Future<List<StudentAttendanceData>> getStudentAttendance(
+    int attendanceSessionId,
+  ) => (select(
+    studentAttendance,
+  )..where((row) => row.attendanceSessionId.equals(attendanceSessionId))).get();
+
+  Future<List<IndependentLearningRecord>> getIndependentLearningRecords({
+    required int subjectId,
+    required int gradingPeriodId,
+  }) =>
+      (select(independentLearningRecords)
+            ..where(
+              (row) =>
+                  row.subjectId.equals(subjectId) &
+                  row.gradingPeriodId.equals(gradingPeriodId),
+            )
+            ..orderBy([(row) => OrderingTerm(expression: row.id)]))
+          .get();
+
+  Future<int> createIndependentLearningRecord({
+    required int subjectId,
+    required int gradingPeriodId,
+    required String activityName,
+    String description = '',
+    String? activityDate,
+    required double totalPossibleScore,
+  }) {
+    return into(independentLearningRecords).insert(
+      IndependentLearningRecordsCompanion.insert(
+        subjectId: subjectId,
+        gradingPeriodId: gradingPeriodId,
+        activityName: activityName,
+        description: Value(description),
+        activityDate: Value(activityDate),
+        totalPossibleScore: totalPossibleScore,
+        createdAt: DateTime.now().toIso8601String(),
+      ),
+    );
+  }
+
+  Future<void> saveIndependentLearningScore({
+    required int recordId,
+    required int studentId,
+    required double? score,
+    String remarks = '',
+  }) async {
+    final existing =
+        await (select(studentIndependentLearningScores)
+              ..where(
+                (row) =>
+                    row.recordId.equals(recordId) &
+                    row.studentId.equals(studentId),
+              )
+              ..limit(1))
+            .get();
+    final now = DateTime.now().toIso8601String();
+    if (existing.isEmpty) {
+      await into(studentIndependentLearningScores).insert(
+        StudentIndependentLearningScoresCompanion.insert(
+          recordId: recordId,
+          studentId: studentId,
+          score: Value(score),
+          remarks: Value(remarks),
+          updatedAt: Value(now),
+        ),
+      );
+    } else {
+      await (update(
+        studentIndependentLearningScores,
+      )..where((row) => row.id.equals(existing.first.id))).write(
+        StudentIndependentLearningScoresCompanion(
+          score: Value(score),
+          remarks: Value(remarks),
+          updatedAt: Value(now),
+        ),
+      );
+    }
+  }
+
+  Future<List<StudentIndependentLearningScore>> getIndependentLearningScores(
+    int recordId,
+  ) => (select(
+    studentIndependentLearningScores,
+  )..where((row) => row.recordId.equals(recordId))).get();
+
   Future<int> createActivityLog({
     required String activity,
     String details = '',
