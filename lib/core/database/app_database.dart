@@ -790,4 +790,213 @@ class AppDatabase extends _$AppDatabase {
             ])
             ..limit(limit))
           .get();
+
+  Future<GradingConfiguration?> getActiveGradingConfiguration(
+    int subjectId,
+  ) async {
+    final subjectSpecific =
+        await (select(gradingConfigurations)
+              ..where(
+                (row) =>
+                    row.subjectId.equals(subjectId) & row.isActive.equals(true),
+              )
+              ..limit(1))
+            .get();
+    if (subjectSpecific.isNotEmpty) return subjectSpecific.first;
+    final defaults =
+        await (select(gradingConfigurations)
+              ..where(
+                (row) => row.subjectId.isNull() & row.isActive.equals(true),
+              )
+              ..limit(1))
+            .get();
+    if (defaults.isNotEmpty) return defaults.first;
+    await into(gradingConfigurations).insert(
+      GradingConfigurationsCompanion.insert(
+        name: 'Default',
+        subjectId: const Value.absent(),
+        isActive: const Value(true),
+      ),
+    );
+    return (select(gradingConfigurations)
+          ..where((row) => row.name.equals('Default') & row.subjectId.isNull())
+          ..limit(1))
+        .getSingle();
+  }
+
+  Future<int> saveGradingConfiguration({
+    int? subjectId,
+    required double quizWeight,
+    required double attendanceWeight,
+    required double workWeight,
+    required double majorExamWeight,
+    required double independentLearningWeight,
+    int decimalPlaces = 2,
+  }) async {
+    final existing =
+        await (select(gradingConfigurations)
+              ..where(
+                subjectId == null
+                    ? (row) => row.subjectId.isNull()
+                    : (row) => row.subjectId.equals(subjectId),
+              )
+              ..limit(1))
+            .get();
+    final values = GradingConfigurationsCompanion(
+      quizWeight: Value(quizWeight),
+      attendanceWeight: Value(attendanceWeight),
+      workWeight: Value(workWeight),
+      majorExamWeight: Value(majorExamWeight),
+      independentLearningWeight: Value(independentLearningWeight),
+      decimalPlaces: Value(decimalPlaces),
+      isActive: const Value(true),
+    );
+    if (existing.isEmpty) {
+      return into(gradingConfigurations).insert(
+        GradingConfigurationsCompanion.insert(
+          subjectId: Value(subjectId),
+          name: subjectId == null ? 'Default' : 'Subject $subjectId',
+          quizWeight: Value(quizWeight),
+          attendanceWeight: Value(attendanceWeight),
+          workWeight: Value(workWeight),
+          majorExamWeight: Value(majorExamWeight),
+          independentLearningWeight: Value(independentLearningWeight),
+          decimalPlaces: Value(decimalPlaces),
+        ),
+      );
+    }
+    await (update(
+      gradingConfigurations,
+    )..where((row) => row.id.equals(existing.first.id))).write(values);
+    return existing.first.id;
+  }
+
+  Future<void> saveTermGrade({
+    required int subjectId,
+    required int studentId,
+    required int gradingPeriodId,
+    required double? grade,
+  }) async {
+    final existing =
+        await (select(termGrades)
+              ..where(
+                (row) =>
+                    row.subjectId.equals(subjectId) &
+                    row.studentId.equals(studentId) &
+                    row.gradingPeriodId.equals(gradingPeriodId),
+              )
+              ..limit(1))
+            .get();
+    final now = DateTime.now().toIso8601String();
+    if (existing.isEmpty) {
+      await into(termGrades).insert(
+        TermGradesCompanion.insert(
+          subjectId: subjectId,
+          studentId: studentId,
+          gradingPeriodId: gradingPeriodId,
+          grade: Value(grade),
+          calculatedAt: Value(now),
+        ),
+      );
+    } else {
+      await (update(
+        termGrades,
+      )..where((row) => row.id.equals(existing.first.id))).write(
+        TermGradesCompanion(grade: Value(grade), calculatedAt: Value(now)),
+      );
+    }
+  }
+
+  Future<List<TermGrade>> getTermGrades({
+    required int subjectId,
+    required int gradingPeriodId,
+  }) =>
+      (select(termGrades)..where(
+            (row) =>
+                row.subjectId.equals(subjectId) &
+                row.gradingPeriodId.equals(gradingPeriodId),
+          ))
+          .get();
+
+  Future<void> replaceRankings({
+    required int subjectId,
+    required int gradingPeriodId,
+    required List<({int studentId, int rank, double grade})> rankings,
+  }) async {
+    await transaction(() async {
+      await (delete(gradeRankings)..where(
+            (row) =>
+                row.subjectId.equals(subjectId) &
+                row.gradingPeriodId.equals(gradingPeriodId),
+          ))
+          .go();
+      final now = DateTime.now().toIso8601String();
+      await batch((batch) {
+        batch.insertAll(
+          gradeRankings,
+          rankings
+              .map(
+                (entry) => GradeRankingsCompanion.insert(
+                  subjectId: subjectId,
+                  gradingPeriodId: gradingPeriodId,
+                  studentId: entry.studentId,
+                  rank: entry.rank,
+                  grade: entry.grade,
+                  calculatedAt: now,
+                ),
+              )
+              .toList(),
+        );
+      });
+    });
+  }
+
+  Future<List<GradeRanking>> getRankings({
+    required int subjectId,
+    required int gradingPeriodId,
+  }) =>
+      (select(gradeRankings)
+            ..where(
+              (row) =>
+                  row.subjectId.equals(subjectId) &
+                  row.gradingPeriodId.equals(gradingPeriodId),
+            )
+            ..orderBy([(row) => OrderingTerm(expression: row.rank)]))
+          .get();
+
+  Future<String?> getApplicationSetting(String key) async {
+    final rows =
+        await (select(applicationSettings)
+              ..where((row) => row.key.equals(key))
+              ..limit(1))
+            .get();
+    return rows.isEmpty ? null : rows.first.value;
+  }
+
+  Future<void> saveApplicationSetting(String key, String value) async {
+    final existing =
+        await (select(applicationSettings)
+              ..where((row) => row.key.equals(key))
+              ..limit(1))
+            .get();
+    final now = DateTime.now().toIso8601String();
+    if (existing.isEmpty) {
+      await into(applicationSettings).insert(
+        ApplicationSettingsCompanion.insert(
+          key: key,
+          value: value,
+          updatedAt: now,
+        ),
+      );
+    } else {
+      await (update(
+        applicationSettings,
+      )..where((row) => row.id.equals(existing.first.id))).write(
+        ApplicationSettingsCompanion(
+          value: Value(value),
+          updatedAt: Value(now),
+        ),
+      );
+    }
+  }
 }

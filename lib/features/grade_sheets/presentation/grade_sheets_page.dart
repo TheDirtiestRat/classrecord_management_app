@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../core/database/database_provider.dart';
+import '../../../core/services/grade_computation_service.dart';
 import '../../academic_management/providers/academic_management_providers.dart';
 import '../../students/providers/students_providers.dart';
 import '../providers/grade_sheet_providers.dart';
@@ -216,6 +217,20 @@ class GradeSheetGrid extends ConsumerWidget {
                               size: 18,
                             ),
                             label: const Text('Independent Learning'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () =>
+                                configureWeights(context, ref, query),
+                            icon: const Icon(Icons.tune, size: 18),
+                            label: const Text('Grading Weights'),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () => computeGrades(context, ref, query),
+                            icon: const Icon(
+                              Icons.calculate_outlined,
+                              size: 18,
+                            ),
+                            label: const Text('Compute Grades'),
                           ),
                         ],
                       ),
@@ -654,4 +669,254 @@ Future<void> addIndependent(
   name.dispose();
   description.dispose();
   max.dispose();
+}
+
+Future<void> configureWeights(
+  BuildContext context,
+  WidgetRef ref,
+  GradeSheetQuery query,
+) async {
+  final database = await ref.read(appDatabaseProvider.future);
+  final config = await database.getActiveGradingConfiguration(query.subjectId);
+  if (!context.mounted) return;
+  final quiz = TextEditingController(
+    text: (config?.quizWeight ?? 20).toStringAsFixed(0),
+  );
+  final attendance = TextEditingController(
+    text: (config?.attendanceWeight ?? 10).toStringAsFixed(0),
+  );
+  final work = TextEditingController(
+    text: (config?.workWeight ?? 20).toStringAsFixed(0),
+  );
+  final exam = TextEditingController(
+    text: (config?.majorExamWeight ?? 40).toStringAsFixed(0),
+  );
+  final independent = TextEditingController(
+    text: (config?.independentLearningWeight ?? 10).toStringAsFixed(0),
+  );
+  final saved = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Grading Weights'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: quiz,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Quizzes %'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: attendance,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Attendance %'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: work,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Seatwork / Work / Activities / Projects %',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: exam,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Major Exams %'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: independent,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Independent Learning %',
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  if (saved == true && context.mounted) {
+    final weights = GradeWeights(
+      quizzes: double.tryParse(quiz.text.trim()) ?? -1,
+      attendance: double.tryParse(attendance.text.trim()) ?? -1,
+      work: double.tryParse(work.text.trim()) ?? -1,
+      majorExams: double.tryParse(exam.text.trim()) ?? -1,
+      independentLearning: double.tryParse(independent.text.trim()) ?? -1,
+    );
+    if (weights.isValid && context.mounted) {
+      await database.saveGradingConfiguration(
+        subjectId: query.subjectId,
+        quizWeight: weights.quizzes,
+        attendanceWeight: weights.attendance,
+        workWeight: weights.work,
+        majorExamWeight: weights.majorExams,
+        independentLearningWeight: weights.independentLearning,
+        decimalPlaces: config?.decimalPlaces ?? 2,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Grading weights saved.')));
+    } else if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Grading weights must total exactly 100%.'),
+        ),
+      );
+    }
+  }
+  quiz.dispose();
+  attendance.dispose();
+  work.dispose();
+  exam.dispose();
+  independent.dispose();
+}
+
+Future<void> computeGrades(
+  BuildContext context,
+  WidgetRef ref,
+  GradeSheetQuery query,
+) async {
+  final database = await ref.read(appDatabaseProvider.future);
+  final students = await database.getEnrolledStudents(query.subjectId);
+  final assessments = await database.getAssessments(
+    subjectId: query.subjectId,
+    gradingPeriodId: query.gradingPeriodId,
+  );
+  final attendanceSessions = await database.getAttendanceSessions(
+    subjectId: query.subjectId,
+    gradingPeriodId: query.gradingPeriodId,
+  );
+  final independentRecords = await database.getIndependentLearningRecords(
+    subjectId: query.subjectId,
+    gradingPeriodId: query.gradingPeriodId,
+  );
+  final config = await database.getActiveGradingConfiguration(query.subjectId);
+  final weights = GradeWeights(
+    quizzes: config?.quizWeight ?? 20,
+    attendance: config?.attendanceWeight ?? 10,
+    work: config?.workWeight ?? 20,
+    majorExams: config?.majorExamWeight ?? 40,
+    independentLearning: config?.independentLearningWeight ?? 10,
+  );
+  const attendanceValues = AttendanceValues();
+  const computation = GradeComputationService();
+  final entries = <({int studentId, int rank, double grade})>[];
+
+  for (final student in students) {
+    final quizzes = <GradeComponentInput>[];
+    final work = <GradeComponentInput>[];
+    final exams = <GradeComponentInput>[];
+    for (final assessment in assessments) {
+      final scores = await database.getAssessmentScores(assessment.id);
+      final match = scores.where((score) => score.studentId == student.id);
+      if (match.isEmpty || match.first.score == null) continue;
+      final input = GradeComponentInput(
+        earned: match.first.score!,
+        possible: assessment.totalPossibleScore,
+      );
+      final type = assessment.type.toLowerCase();
+      if (type.contains('exam')) {
+        exams.add(input);
+      } else if (type.contains('quiz')) {
+        quizzes.add(input);
+      } else {
+        work.add(input);
+      }
+    }
+
+    final attendance = <GradeComponentInput>[];
+    for (final session in attendanceSessions) {
+      final records = await database.getStudentAttendance(session.id);
+      final match = records.where((record) => record.studentId == student.id);
+      final value = match.isEmpty
+          ? double.nan
+          : attendanceValues.valueFor(match.first.code);
+      if (!value.isNaN) {
+        attendance.add(GradeComponentInput(earned: value, possible: 100));
+      }
+    }
+
+    final independent = <GradeComponentInput>[];
+    for (final record in independentRecords) {
+      final scores = await database.getIndependentLearningScores(record.id);
+      final match = scores.where((score) => score.studentId == student.id);
+      if (match.isNotEmpty && match.first.score != null) {
+        independent.add(
+          GradeComponentInput(
+            earned: match.first.score!,
+            possible: record.totalPossibleScore,
+          ),
+        );
+      }
+    }
+
+    final grade = computation.computeTermGrade(
+      weights: weights,
+      quizzes: quizzes,
+      attendance: attendance,
+      work: work,
+      majorExams: exams,
+      independentLearning: independent,
+      decimalPlaces: config?.decimalPlaces ?? 2,
+    );
+    await database.saveTermGrade(
+      subjectId: query.subjectId,
+      studentId: student.id,
+      gradingPeriodId: query.gradingPeriodId,
+      grade: grade,
+    );
+    if (grade != null) {
+      entries.add((studentId: student.id, rank: 0, grade: grade));
+    }
+  }
+
+  final rankingInput = entries
+      .map(
+        (entry) => GradeRankingEntry(
+          studentId: entry.studentId,
+          studentName: '',
+          grade: entry.grade,
+        ),
+      )
+      .toList();
+  final ranked = GradeComputationService.rankEntries(rankingInput);
+  await database.replaceRankings(
+    subjectId: query.subjectId,
+    gradingPeriodId: query.gradingPeriodId,
+    rankings: ranked
+        .map(
+          (entry) => (
+            studentId: entry.studentId,
+            rank: entry.rank!,
+            grade: entry.grade,
+          ),
+        )
+        .toList(),
+  );
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Grades computed for ${entries.length} complete student records.',
+        ),
+      ),
+    );
+  }
 }
