@@ -72,13 +72,19 @@ class AppDatabase extends _$AppDatabase {
           .get();
 
   Future<int> createAcademicYear(String name, {bool isActive = false}) {
-    return into(academicYears).insert(
-      AcademicYearsCompanion.insert(
-        name: name,
-        isActive: Value(isActive),
-        createdAt: DateTime.now().toIso8601String(),
-      ),
-    );
+    return transaction(() async {
+      if (isActive) {
+        await update(academicYears)
+            .write(const AcademicYearsCompanion(isActive: Value(false)));
+      }
+      return into(academicYears).insert(
+        AcademicYearsCompanion.insert(
+          name: name,
+          isActive: Value(isActive),
+          createdAt: DateTime.now().toIso8601String(),
+        ),
+      );
+    });
   }
 
   Future<bool> updateAcademicYear(int id, String name, bool isActive) async {
@@ -86,6 +92,10 @@ class AppDatabase extends _$AppDatabase {
         await (update(academicYears)..where((row) => row.id.equals(id))).write(
           AcademicYearsCompanion(name: Value(name), isActive: Value(isActive)),
         );
+    if (isActive) {
+      await (update(academicYears)..where((row) => row.id.equals(id).not()))
+          .write(const AcademicYearsCompanion(isActive: Value(false)));
+    }
     return count == 1;
   }
 
@@ -95,6 +105,247 @@ class AppDatabase extends _$AppDatabase {
   Future<List<Subject>> getAllSubjects() => (select(
     subjects,
   )..orderBy([(row) => OrderingTerm(expression: row.code)])).get();
+
+  Future<List<Semester>> getSemesters(int academicYearId) =>
+      (select(semesters)
+            ..where((row) => row.academicYearId.equals(academicYearId))
+            ..orderBy([(row) => OrderingTerm(expression: row.name)]))
+          .get();
+
+  Future<int> createSemester({
+    required int academicYearId,
+    required String name,
+    bool isActive = false,
+  }) {
+    return transaction(() async {
+      if (isActive) {
+        await (update(semesters)
+              ..where((row) => row.academicYearId.equals(academicYearId)))
+            .write(const SemestersCompanion(isActive: Value(false)));
+      }
+      return into(semesters).insert(
+        SemestersCompanion.insert(
+          academicYearId: academicYearId,
+          name: name,
+          isActive: Value(isActive),
+          createdAt: DateTime.now().toIso8601String(),
+        ),
+      );
+    });
+  }
+
+  Future<bool> updateSemester({
+    required int id,
+    required int academicYearId,
+    required String name,
+    bool isActive = false,
+  }) async {
+    final count = await (update(semesters)..where((row) => row.id.equals(id)))
+        .write(
+          SemestersCompanion(
+            academicYearId: Value(academicYearId),
+            name: Value(name),
+            isActive: Value(isActive),
+          ),
+        );
+    if (isActive) {
+      await (update(semesters)..where(
+            (row) =>
+                row.academicYearId.equals(academicYearId) &
+                row.id.equals(id).not(),
+          ))
+          .write(const SemestersCompanion(isActive: Value(false)));
+    }
+    return count == 1;
+  }
+
+  Future<int> deleteSemester(int id) =>
+      (delete(semesters)..where((row) => row.id.equals(id))).go();
+
+  Future<SchoolSetting?> getSchoolSetting() async {
+    final rows = await (select(schoolSettings)..limit(1)).get();
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  Future<int> saveSchoolSetting({
+    required String schoolName,
+    required String address,
+  }) async {
+    final existing = await getSchoolSetting();
+    if (existing == null) {
+      return into(schoolSettings).insert(
+        SchoolSettingsCompanion.insert(
+          schoolName: Value(schoolName),
+          address: Value(address),
+        ),
+      );
+    }
+    await (update(
+      schoolSettings,
+    )..where((row) => row.id.equals(existing.id))).write(
+      SchoolSettingsCompanion(
+        schoolName: Value(schoolName),
+        address: Value(address),
+      ),
+    );
+    return existing.id;
+  }
+
+  Future<List<Instructor>> getAllInstructors() =>
+      (select(instructors)
+            ..where((row) => row.isActive.equals(true))
+            ..orderBy([(row) => OrderingTerm(expression: row.lastName)]))
+          .get();
+
+  Future<int> createInstructor({
+    required String firstName,
+    required String lastName,
+    String middleName = '',
+    String suffix = '',
+    String? employeeNumber,
+    String? email,
+    String? contactNumber,
+  }) {
+    return into(instructors).insert(
+      InstructorsCompanion.insert(
+        employeeNumber: Value(employeeNumber),
+        firstName: firstName,
+        middleName: Value(middleName),
+        lastName: lastName,
+        suffix: Value(suffix),
+        email: Value(email),
+        contactNumber: Value(contactNumber),
+      ),
+    );
+  }
+
+  Future<bool> updateInstructor({
+    required int id,
+    required String firstName,
+    required String lastName,
+    String middleName = '',
+    String suffix = '',
+    String? employeeNumber,
+    String? email,
+    String? contactNumber,
+  }) async {
+    final count = await (update(instructors)..where((row) => row.id.equals(id)))
+        .write(
+          InstructorsCompanion(
+            employeeNumber: Value(employeeNumber),
+            firstName: Value(firstName),
+            middleName: Value(middleName),
+            lastName: Value(lastName),
+            suffix: Value(suffix),
+            email: Value(email),
+            contactNumber: Value(contactNumber),
+          ),
+        );
+    return count == 1;
+  }
+
+  Future<int> deleteInstructor(int id) =>
+      (delete(instructors)..where((row) => row.id.equals(id))).go();
+
+  Future<List<Section>> getAllSections() => (select(
+    sections,
+  )..orderBy([(row) => OrderingTerm(expression: row.name)])).get();
+
+  Future<int> createSection({
+    required String name,
+    String course = '',
+    int? yearLevel,
+  }) {
+    return into(sections).insert(
+      SectionsCompanion.insert(
+        name: name,
+        course: Value(course),
+        yearLevel: Value(yearLevel),
+      ),
+    );
+  }
+
+  Future<bool> updateSection({
+    required int id,
+    required String name,
+    String course = '',
+    int? yearLevel,
+  }) async {
+    final count = await (update(sections)..where((row) => row.id.equals(id)))
+        .write(
+          SectionsCompanion(
+            name: Value(name),
+            course: Value(course),
+            yearLevel: Value(yearLevel),
+          ),
+        );
+    return count == 1;
+  }
+
+  Future<int> deleteSection(int id) =>
+      (delete(sections)..where((row) => row.id.equals(id))).go();
+
+  Future<int> createSubject({
+    required String code,
+    required String name,
+    String description = '',
+    required int academicYearId,
+    required int semesterId,
+    int? sectionId,
+    int? instructorId,
+    double units = 3,
+    String status = 'Active',
+  }) {
+    final now = DateTime.now().toIso8601String();
+    return into(subjects).insert(
+      SubjectsCompanion.insert(
+        code: code,
+        name: name,
+        description: Value(description),
+        academicYearId: academicYearId,
+        semesterId: semesterId,
+        sectionId: Value(sectionId),
+        instructorId: Value(instructorId),
+        units: Value(units),
+        status: Value(status),
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+  }
+
+  Future<bool> updateSubject({
+    required int id,
+    required String code,
+    required String name,
+    String description = '',
+    required int academicYearId,
+    required int semesterId,
+    int? sectionId,
+    int? instructorId,
+    double units = 3,
+    String status = 'Active',
+  }) async {
+    final count = await (update(subjects)..where((row) => row.id.equals(id)))
+        .write(
+          SubjectsCompanion(
+            code: Value(code),
+            name: Value(name),
+            description: Value(description),
+            academicYearId: Value(academicYearId),
+            semesterId: Value(semesterId),
+            sectionId: Value(sectionId),
+            instructorId: Value(instructorId),
+            units: Value(units),
+            status: Value(status),
+            updatedAt: Value(DateTime.now().toIso8601String()),
+          ),
+        );
+    return count == 1;
+  }
+
+  Future<int> deleteSubject(int id) =>
+      (delete(subjects)..where((row) => row.id.equals(id))).go();
 
   Future<int> createActivityLog({
     required String activity,

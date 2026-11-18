@@ -1,7 +1,9 @@
 import 'package:go_router/go_router.dart';
 
+import '../features/academic_management/presentation/academic_management_page.dart';
 import '../features/dashboard/presentation/dashboard_page.dart';
 import '../features/shared/presentation/module_placeholder_page.dart';
+import '../features/subjects/presentation/subjects_page.dart';
 import '../shared/widgets/app_shell.dart';
 
 class AppRouter {
@@ -18,6 +20,16 @@ class AppRouter {
             pageBuilder: (context, state) =>
                 const NoTransitionPage(child: DashboardPage()),
           ),
+          GoRoute(
+            path: '/academic',
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: AcademicManagementPage()),
+          ),
+          GoRoute(
+            path: '/subjects',
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: SubjectsPage()),
+          ),
           ..._moduleRoutes(),
         ],
       ),
@@ -26,8 +38,6 @@ class AppRouter {
 
   static List<GoRoute> _moduleRoutes() {
     const modules = <String, String>{
-      '/academic': 'Academic Management',
-      '/subjects': 'Subjects',
       '/students': 'Students',
       '/grade-sheets': 'Grade Sheets',
       '/attendance': 'Attendance',
