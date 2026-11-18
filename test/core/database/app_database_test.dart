@@ -133,6 +133,89 @@ void main() {
     expect(enrolled.single.id, studentId);
   });
 
+  test(
+    'paginates students with database-side filters and stable offsets',
+    () async {
+      final yearId = await database.createAcademicYear('2026-2027');
+      final semesterId = await database.createSemester(
+        academicYearId: yearId,
+        name: 'First Semester',
+      );
+      final subjectId = await database.createSubject(
+        code: 'IT101',
+        name: 'Introduction to Computing',
+        academicYearId: yearId,
+        semesterId: semesterId,
+      );
+      final students = [
+        await database.createStudent(
+          studentNumber: '2026-101',
+          firstName: 'Ana',
+          lastName: 'Alvarez',
+          course: 'BSIT',
+          yearLevel: 1,
+        ),
+        await database.createStudent(
+          studentNumber: '2026-102',
+          firstName: 'Ben',
+          lastName: 'Bautista',
+          course: 'BSCS',
+          yearLevel: 2,
+        ),
+        await database.createStudent(
+          studentNumber: '2026-103',
+          firstName: 'Ana',
+          lastName: 'Castro',
+          course: 'BSIT',
+          yearLevel: 1,
+        ),
+      ];
+      for (final studentId in students) {
+        await database.enrollStudent(
+          subjectId: subjectId,
+          studentId: studentId,
+        );
+      }
+
+      final firstPage = await database.getStudentsPage(limit: 2, offset: 0);
+      final secondPage = await database.getStudentsPage(limit: 2, offset: 2);
+      final filtered = await database.getStudentsPage(
+        limit: 10,
+        offset: 0,
+        search: 'Ana',
+        course: 'BSIT',
+        status: 'Active',
+        yearLevel: 1,
+      );
+      final enrollmentPage = await database.getEnrolledStudentsPage(
+        subjectId: subjectId,
+        limit: 1,
+        offset: 1,
+      );
+
+      expect(firstPage.totalRecords, 3);
+      expect(
+        firstPage.records
+            .map((student) => student.id)
+            .toSet()
+            .intersection(
+              secondPage.records.map((student) => student.id).toSet(),
+            ),
+        isEmpty,
+      );
+      expect(secondPage.records, hasLength(1));
+      expect(filtered.totalRecords, 2);
+      expect(filtered.records.map((student) => student.firstName), [
+        'Ana',
+        'Ana',
+      ]);
+      expect(await database.getStudentCourses(), ['BSCS', 'BSIT']);
+      expect(await database.getStudentIds(search: 'Ana'), hasLength(2));
+      expect(enrollmentPage.totalRecords, 3);
+      expect(enrollmentPage.records, hasLength(1));
+    },
+  );
+
   test('batch-updates selected students and adds subjects', () async {
     final yearId = await database.createAcademicYear('2026-2027');
     final semesterId = await database.createSemester(
@@ -239,7 +322,7 @@ void main() {
   });
 
   test(
-    'grade sheet stores missing and zero assessment scores separately',
+    'grade sheet stores missing and zero scores and validates score limits',
     () async {
       final yearId = await database.createAcademicYear('2026-2027');
       final semesterId = await database.createSemester(
@@ -257,6 +340,7 @@ void main() {
         firstName: 'Ana',
         lastName: 'Reyes',
       );
+      await database.enrollStudent(subjectId: subjectId, studentId: studentId);
       final period = (await database.getGradingPeriods()).first;
       final assessmentId = await database.createAssessment(
         subjectId: subjectId,
@@ -293,6 +377,40 @@ void main() {
             .score,
         0,
       );
+
+      await expectLater(
+        database.saveAssessmentScore(
+          assessmentId: assessmentId,
+          studentId: studentId,
+          score: 21,
+        ),
+        throwsArgumentError,
+      );
+      await database.saveAssessmentScore(
+        assessmentId: assessmentId,
+        studentId: studentId,
+        score: 10,
+      );
+      final assessment = await (database.select(
+        database.assessments,
+      )..where((row) => row.id.equals(assessmentId))).getSingle();
+      await expectLater(
+        database.updateAssessment(
+          id: assessmentId,
+          name: assessment.name,
+          type: assessment.type,
+          date: assessment.date,
+          totalPossibleScore: 5,
+        ),
+        throwsStateError,
+      );
+      expect(
+        (await (database.select(
+              database.assessments,
+            )..where((row) => row.id.equals(assessmentId))).getSingle())
+            .totalPossibleScore,
+        20,
+      );
     },
   );
 
@@ -313,12 +431,25 @@ void main() {
       firstName: 'Leo',
       lastName: 'Garcia',
     );
+    await database.enrollStudent(subjectId: subjectId, studentId: studentId);
     final period = (await database.getGradingPeriods()).first;
     final sessionId = await database.createAttendanceSession(
       subjectId: subjectId,
       gradingPeriodId: period.id,
       sessionDate: '2026-11-18',
     );
+    final reusedSessionId = await database.getOrCreateAttendanceSession(
+      subjectId: subjectId,
+      gradingPeriodId: period.id,
+      sessionDate: '2026-11-18',
+    );
+    final nextSessionId = await database.getOrCreateAttendanceSession(
+      subjectId: subjectId,
+      gradingPeriodId: period.id,
+      sessionDate: '2026-11-19',
+    );
+    expect(reusedSessionId, sessionId);
+    expect(nextSessionId, isNot(sessionId));
 
     await database.saveAttendanceCode(
       attendanceSessionId: sessionId,
@@ -337,6 +468,14 @@ void main() {
     expect(
       (await database.getStudentAttendanceForSessions([sessionId])).single.code,
       'A',
+    );
+    expect(await database.getAttendanceCodeCounts(sessionId), {'A': 1});
+    expect(
+      await database.getStudentAttendanceForStudents(
+        attendanceSessionId: sessionId,
+        studentIds: [studentId],
+      ),
+      hasLength(1),
     );
   });
 
@@ -357,6 +496,7 @@ void main() {
       firstName: 'Mia',
       lastName: 'Reyes',
     );
+    await database.enrollStudent(subjectId: subjectId, studentId: studentId);
     final period = (await database.getGradingPeriods()).first;
     final recordId = await database.createIndependentLearningRecord(
       subjectId: subjectId,

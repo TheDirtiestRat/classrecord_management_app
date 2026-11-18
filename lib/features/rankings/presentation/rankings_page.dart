@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/theme/app_colors.dart';
-import '../../../core/database/app_database.dart';
-import '../../../core/database/database_provider.dart';
+import '../../../shared/widgets/app_data_table.dart';
 import '../../academic_management/providers/academic_management_providers.dart';
+import '../../grade_sheets/providers/grade_sheet_providers.dart';
+import '../providers/ranking_providers.dart';
 
 class RankingsPage extends ConsumerStatefulWidget {
   const RankingsPage({super.key});
@@ -14,13 +15,16 @@ class RankingsPage extends ConsumerStatefulWidget {
 }
 
 class _RankingsPageState extends ConsumerState<RankingsPage> {
-  int? subjectId;
-  int? periodId;
-  
+  int? _subjectId;
+  int? _periodId;
+  int _pageIndex = 0;
+  int _rowsPerPage = 10;
 
   @override
   Widget build(BuildContext context) {
     final subjectsAsync = ref.watch(subjectsProvider);
+    final periodsAsync = ref.watch(gradingPeriodsProvider);
+
     return Padding(
       padding: const EdgeInsets.all(28),
       child: Column(
@@ -31,77 +35,199 @@ class _RankingsPageState extends ConsumerState<RankingsPage> {
             style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 18),
-          subjectsAsync.when(
-            loading: () => const LinearProgressIndicator(),
-            error: (error, stack) => Text('Unable to load subjects: $error'),
-            data: (subjects) {
-              if (subjects.isEmpty) {
-                return const Expanded(
-                  child: Center(
-                    child: Text(
-                      'Create a subject to view rankings',
-                      style: TextStyle(color: AppColors.textSecondary),
-                    ),
-                  ),
-                );
-              }
-              if (subjectId == null ||
-                  !subjects.any((subject) => subject.id == subjectId)) {
-                subjectId = subjects.first.id;
-              }
-              return Expanded(
-                child: Card(
-                  margin: EdgeInsets.zero,
-                  child: Padding(
-                    padding: const EdgeInsets.all(18),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            SizedBox(
-                              width: 320,
-                              child: DropdownButtonFormField<int>(
-                                initialValue: subjectId,
-                                decoration: const InputDecoration(
-                                  labelText: 'Subject',
-                                ),
-                                items: subjects
-                                    .map(
-                                      (subject) => DropdownMenuItem(
-                                        value: subject.id,
-                                        child: Text(
-                                          '${subject.code} - ${subject.name}',
+          Expanded(
+            child: subjectsAsync.when(
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, stack) =>
+                  Center(child: Text('Unable to load subjects: $error')),
+              data: (subjects) => periodsAsync.when(
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (error, stack) => Center(
+                  child: Text('Unable to load grading periods: $error'),
+                ),
+                data: (periods) {
+                  if (subjects.isEmpty) {
+                    return const _RankingEmptyState(
+                      message: 'Create a subject to view rankings.',
+                    );
+                  }
+                  if (periods.isEmpty) {
+                    return const _RankingEmptyState(
+                      message: 'No grading periods are available.',
+                    );
+                  }
+
+                  final selectedSubjects = subjects
+                      .where((subject) => subject.id == _subjectId)
+                      .toList();
+                  final subjectId = selectedSubjects.isEmpty
+                      ? subjects.first.id
+                      : selectedSubjects.first.id;
+                  final selectedPeriods = periods
+                      .where((period) => period.id == _periodId)
+                      .toList();
+                  final periodId = selectedPeriods.isEmpty
+                      ? periods.first.id
+                      : selectedPeriods.first.id;
+                  final query = RankingPageQuery(
+                    subjectId: subjectId,
+                    gradingPeriodId: periodId,
+                    pageIndex: _pageIndex,
+                    rowsPerPage: _rowsPerPage,
+                  );
+                  final rankingsAsync = ref.watch(rankingPageProvider(query));
+
+                  return Card(
+                    margin: EdgeInsets.zero,
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        children: [
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final narrow = constraints.maxWidth < 680;
+                              final subjectDropdown =
+                                  DropdownButtonFormField<int>(
+                                    key: ValueKey(subjectId),
+                                    initialValue: subjectId,
+                                    isExpanded: true,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Subject',
+                                    ),
+                                    items: subjects
+                                        .map(
+                                          (subject) => DropdownMenuItem(
+                                            value: subject.id,
+                                            child: Text(
+                                              '${subject.code} — ${subject.name}',
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        )
+                                        .toList(),
+                                    onChanged: (value) {
+                                      if (value == null) return;
+                                      setState(() {
+                                        _subjectId = value;
+                                        _periodId = null;
+                                        _pageIndex = 0;
+                                      });
+                                    },
+                                  );
+                              final periodDropdown =
+                                  DropdownButtonFormField<int>(
+                                    key: ValueKey(periodId),
+                                    initialValue: periodId,
+                                    isExpanded: true,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Grading Period',
+                                    ),
+                                    items: periods
+                                        .map(
+                                          (period) => DropdownMenuItem(
+                                            value: period.id,
+                                            child: Text(period.name),
+                                          ),
+                                        )
+                                        .toList(),
+                                    onChanged: (value) {
+                                      if (value == null) return;
+                                      setState(() {
+                                        _periodId = value;
+                                        _pageIndex = 0;
+                                      });
+                                    },
+                                  );
+                              if (narrow) {
+                                return Column(
+                                  children: [
+                                    subjectDropdown,
+                                    const SizedBox(height: 12),
+                                    periodDropdown,
+                                  ],
+                                );
+                              }
+                              return Row(
+                                children: [
+                                  SizedBox(width: 320, child: subjectDropdown),
+                                  const SizedBox(width: 12),
+                                  Expanded(child: periodDropdown),
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          Expanded(
+                            child: rankingsAsync.when(
+                              loading: () => AppDataTable(
+                                columns: const [
+                                  DataColumn(label: Text('Rank')),
+                                  DataColumn(label: Text('Student')),
+                                  DataColumn(label: Text('Grade')),
+                                ],
+                                rows: const [],
+                                totalRecords: 0,
+                                pageIndex: _pageIndex,
+                                rowsPerPage: _rowsPerPage,
+                                onPageChanged: (_) {},
+                                onRowsPerPageChanged: (_) {},
+                                isLoading: true,
+                              ),
+                              error: (error, stack) => Center(
+                                child: Text('Unable to load rankings: $error'),
+                              ),
+                              data: (page) => AppDataTable(
+                                columns: const [
+                                  DataColumn(label: Text('Rank')),
+                                  DataColumn(label: Text('Student')),
+                                  DataColumn(label: Text('Grade')),
+                                ],
+                                rows: page.records.map((entry) {
+                                  final ranking = entry.$1;
+                                  final student = entry.$2;
+                                  final name =
+                                      '${student.lastName}, ${student.firstName}';
+                                  return DataRow(
+                                    cells: [
+                                      DataCell(Text('${ranking.rank}')),
+                                      DataCell(
+                                        SizedBox(
+                                          width: 280,
+                                          child: Text(
+                                            name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
                                         ),
                                       ),
-                                    )
-                                    .toList(),
-                                onChanged: (value) =>
-                                    setState(() => subjectId = value),
+                                      DataCell(
+                                        Text(ranking.grade.toStringAsFixed(2)),
+                                      ),
+                                    ],
+                                  );
+                                }).toList(),
+                                totalRecords: page.totalRecords,
+                                pageIndex: _pageIndex,
+                                rowsPerPage: _rowsPerPage,
+                                onPageChanged: (pageIndex) =>
+                                    setState(() => _pageIndex = pageIndex),
+                                onRowsPerPageChanged: (rowsPerPage) {
+                                  setState(() {
+                                    _rowsPerPage = rowsPerPage;
+                                    _pageIndex = 0;
+                                  });
+                                },
+                                emptyMessage: 'Compute grades in Grade Sheets to create rankings.',
                               ),
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: _PeriodSelector(
-                                subjectId: subjectId!,
-                                onChanged: (value) =>
-                                    setState(() => periodId = value),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        Expanded(
-                          child: _RankingTable(
-                            subjectId: subjectId!,
-                            periodId: periodId,
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ),
-              );
-            },
+                  );
+                },
+              ),
+            ),
           ),
         ],
       ),
@@ -109,123 +235,19 @@ class _RankingsPageState extends ConsumerState<RankingsPage> {
   }
 }
 
-class _PeriodSelector extends ConsumerWidget {
-  const _PeriodSelector({required this.subjectId, required this.onChanged});
+class _RankingEmptyState extends StatelessWidget {
+  const _RankingEmptyState({required this.message});
 
-  final int subjectId;
-  final ValueChanged<int?> onChanged;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return FutureBuilder<AppDatabase>(
-      future: ref.read(appDatabaseProvider.future),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const SizedBox();
-        return FutureBuilder<List<GradingPeriod>>(
-          future: snapshot.data!.getGradingPeriods(),
-          builder: (context, periodSnapshot) {
-            final periods = periodSnapshot.data ?? [];
-            if (periods.isEmpty) return const SizedBox();
-            return DropdownButtonFormField<int>(
-              initialValue: periods.first.id,
-              decoration: const InputDecoration(labelText: 'Grading Period'),
-              items: periods
-                  .map(
-                    (period) => DropdownMenuItem(
-                      value: period.id,
-                      child: Text(period.name),
-                    ),
-                  )
-                  .toList(),
-              onChanged: onChanged,
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-class _RankingTable extends ConsumerWidget {
-  const _RankingTable({required this.subjectId, required this.periodId});
-  final int subjectId;
-  final int? periodId;
+  final String message;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return FutureBuilder<AppDatabase>(
-      future: ref.read(appDatabaseProvider.future),
-      builder: (context, databaseSnapshot) {
-        if (!databaseSnapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        final database = databaseSnapshot.data!;
-        return FutureBuilder<List<GradingPeriod>>(
-          future: database.getGradingPeriods(),
-          builder: (context, periodSnapshot) {
-            if (!periodSnapshot.hasData) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            final periods = periodSnapshot.data!;
-            if (periods.isEmpty) return const SizedBox();
-            final selectedPeriodId = periodId ?? periods.first.id;
-            return FutureBuilder<List<GradeRanking>>(
-              future: database.getRankings(
-                subjectId: subjectId,
-                gradingPeriodId: selectedPeriodId,
-              ),
-              builder: (context, rankingSnapshot) {
-                if (!rankingSnapshot.hasData) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                final rankings = rankingSnapshot.data!;
-                if (rankings.isEmpty) {
-                  return const Center(
-                    child: Text(
-                      'Compute grades in the Grade Sheets module to create rankings.',
-                      style: TextStyle(color: AppColors.textSecondary),
-                    ),
-                  );
-                }
-                return FutureBuilder<List<Student>>(
-                  future: database.getAllStudents(),
-                  builder: (context, studentSnapshot) {
-                    final students = studentSnapshot.data ?? [];
-                    return SingleChildScrollView(
-                      child: DataTable(
-                        columns: const [
-                          DataColumn(label: Text('Rank')),
-                          DataColumn(label: Text('Student')),
-                          DataColumn(label: Text('Grade')),
-                        ],
-                        rows: rankings.map((ranking) {
-                          Student? student;
-                          for (final item in students) {
-                            if (item.id == ranking.studentId) {
-                              student = item;
-                              break;
-                            }
-                          }
-                          final name = student == null
-                              ? 'Student ${ranking.studentId}'
-                              : '${student.lastName}, ${student.firstName}';
-                          return DataRow(
-                            cells: [
-                              DataCell(Text(ranking.rank.toString())),
-                              DataCell(Text(name)),
-                              DataCell(Text(ranking.grade.toStringAsFixed(2))),
-                            ],
-                          );
-                        }).toList(),
-                      ),
-                    );
-                  },
-                );
-              },
-            );
-          },
-        );
-      },
+  Widget build(BuildContext context) {
+    return Center(
+      child: Text(
+        message,
+        textAlign: TextAlign.center,
+        style: const TextStyle(color: AppColors.textSecondary),
+      ),
     );
   }
 }

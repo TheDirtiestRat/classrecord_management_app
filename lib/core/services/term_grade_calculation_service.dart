@@ -50,27 +50,30 @@ class TermGradeCalculationService {
       await database.getApplicationSetting('attendance_scoring'),
     );
     final scoresByAssessment = <int, Map<int, double?>>{};
-    for (final assessment in assessments) {
-      scoresByAssessment[assessment.id] = {
-        for (final score in await database.getAssessmentScores(assessment.id))
-          score.studentId: score.score,
-      };
+    final assessmentScores = await database.getAssessmentScoresForAssessments(
+      assessments.map((assessment) => assessment.id),
+    );
+    for (final score in assessmentScores) {
+      (scoresByAssessment[score.assessmentId] ??= {})[score.studentId] =
+          score.score;
     }
     final attendanceBySession = <int, Map<int, String>>{};
-    for (final session in attendanceSessions) {
-      attendanceBySession[session.id] = {
-        for (final record in await database.getStudentAttendance(session.id))
-          record.studentId: record.code,
-      };
+    final attendanceRecords = await database.getStudentAttendanceForSessions(
+      attendanceSessions.map((session) => session.id),
+    );
+    for (final record in attendanceRecords) {
+      (attendanceBySession[record.attendanceSessionId] ??=
+              {})[record.studentId] =
+          record.code;
     }
     final independentByRecord = <int, Map<int, double?>>{};
-    for (final record in independentRecords) {
-      independentByRecord[record.id] = {
-        for (final score in await database.getIndependentLearningScores(
-          record.id,
-        ))
-          score.studentId: score.score,
-      };
+    final independentScores = await database
+        .getIndependentLearningScoresForRecords(
+          independentRecords.map((record) => record.id),
+        );
+    for (final score in independentScores) {
+      (independentByRecord[score.recordId] ??= {})[score.studentId] =
+          score.score;
     }
 
     const computation = GradeComputationService();

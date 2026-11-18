@@ -1,9 +1,12 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/database/database_provider.dart';
+import '../../../shared/widgets/app_data_table.dart';
 import '../providers/academic_management_providers.dart';
 
 class AcademicManagementPage extends ConsumerStatefulWidget {
@@ -17,6 +20,12 @@ class AcademicManagementPage extends ConsumerStatefulWidget {
 class _AcademicManagementPageState
     extends ConsumerState<AcademicManagementPage> {
   int? _selectedYearId;
+  int _yearPage = 0;
+  int _semesterPage = 0;
+  int _sectionPage = 0;
+  int _yearRowsPerPage = 10;
+  int _semesterRowsPerPage = 10;
+  int _sectionRowsPerPage = 10;
 
   @override
   Widget build(BuildContext context) {
@@ -30,16 +39,18 @@ class _AcademicManagementPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 12,
+            runSpacing: 12,
             children: [
-              const Expanded(
-                child: Text(
-                  'Academic Information',
-                  style: TextStyle(
-                    color: AppColors.text,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                  ),
+              const Text(
+                'Academic Information',
+                style: TextStyle(
+                  color: AppColors.text,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
               ElevatedButton.icon(
@@ -232,12 +243,27 @@ class _AcademicManagementPageState
       child: Padding(
         padding: const EdgeInsets.all(18),
         child: yearsAsync.when(
-          loading: () => const SizedBox(
-            height: 180,
-            child: Center(child: CircularProgressIndicator()),
+          loading: () => SizedBox(
+            height: 340,
+            child: AppDataTable(
+              columns: const [
+                DataColumn(label: Text('Academic Year')),
+                DataColumn(label: Text('Status')),
+                DataColumn(label: Text('Actions')),
+              ],
+              rows: const [],
+              totalRecords: 0,
+              pageIndex: _yearPage,
+              rowsPerPage: _yearRowsPerPage,
+              onPageChanged: (_) {},
+              onRowsPerPageChanged: (_) {},
+              isLoading: true,
+            ),
           ),
-          error: (error, stack) =>
-              Text('Unable to load academic years: $error'),
+          error: (error, stack) => SizedBox(
+            height: 340,
+            child: Center(child: Text('Unable to load academic years: $error')),
+          ),
           data: (years) {
             if (_selectedYearId == null ||
                 !years.any((year) => year.id == _selectedYearId)) {
@@ -256,41 +282,30 @@ class _AcademicManagementPageState
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                 ),
                 const Divider(),
-                if (years.isEmpty)
-                  const SizedBox(
-                    height: 120,
-                    child: Center(
-                      child: Text(
-                        'No academic years created',
-                        style: TextStyle(color: AppColors.textSecondary),
-                      ),
-                    ),
-                  )
-                else
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      final yearTable = _academicYearsTable(years);
-                      final semesterPanel = _semesterPanel();
-                      if (constraints.maxWidth < 1000) {
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            yearTable,
-                            const SizedBox(height: 16),
-                            semesterPanel,
-                          ],
-                        );
-                      }
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final yearTable = _academicYearsTable(years);
+                    final semesterPanel = _semesterPanel();
+                    if (constraints.maxWidth < 1000) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Expanded(flex: 2, child: yearTable),
-                          const SizedBox(width: 16),
-                          Expanded(flex: 3, child: semesterPanel),
+                          yearTable,
+                          const SizedBox(height: 16),
+                          semesterPanel,
                         ],
                       );
-                    },
-                  ),
+                    }
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 2, child: yearTable),
+                        const SizedBox(width: 16),
+                        Expanded(flex: 3, child: semesterPanel),
+                      ],
+                    );
+                  },
+                ),
               ],
             );
           },
@@ -300,67 +315,91 @@ class _AcademicManagementPageState
   }
 
   Widget _academicYearsTable(List<AcademicYear> years) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        headingRowHeight: 38,
-        dataRowMinHeight: 42,
-        dataRowMaxHeight: 42,
+    final rows = years
+        .map(
+          (year) => DataRow(
+            selected: year.id == _selectedYearId,
+            onSelectChanged: (_) {
+              setState(() {
+                _selectedYearId = year.id;
+                _semesterPage = 0;
+              });
+            },
+            cells: [
+              DataCell(Text(year.name)),
+              DataCell(
+                Text(
+                  year.isActive ? 'Active' : 'Inactive',
+                  style: TextStyle(
+                    color: year.isActive
+                        ? AppColors.primaryDark
+                        : AppColors.textSecondary,
+                  ),
+                ),
+              ),
+              DataCell(
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Edit',
+                      onPressed: () => _editAcademicYear(year),
+                      icon: const Icon(Icons.edit_outlined, size: 18),
+                    ),
+                    IconButton(
+                      tooltip: 'Delete',
+                      onPressed: () => _deleteAcademicYear(year),
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        size: 18,
+                        color: AppColors.red,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        )
+        .toList();
+    final pageIndex = _boundedPage(_yearPage, rows.length, _yearRowsPerPage);
+    final start = pageIndex * _yearRowsPerPage;
+    return SizedBox(
+      height: 340,
+      child: AppDataTable(
         columns: const [
           DataColumn(label: Text('Academic Year')),
           DataColumn(label: Text('Status')),
           DataColumn(label: Text('Actions')),
         ],
-        rows: years
-            .map(
-              (year) => DataRow(
-                selected: year.id == _selectedYearId,
-                onSelectChanged: (_) =>
-                    setState(() => _selectedYearId = year.id),
-                cells: [
-                  DataCell(Text(year.name)),
-                  DataCell(
-                    Text(
-                      year.isActive ? 'Active' : 'Inactive',
-                      style: TextStyle(
-                        color: year.isActive
-                            ? AppColors.primaryDark
-                            : AppColors.textSecondary,
-                      ),
-                    ),
-                  ),
-                  DataCell(
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: 'Edit',
-                          onPressed: () => _editAcademicYear(year),
-                          icon: const Icon(Icons.edit_outlined, size: 18),
-                        ),
-                        IconButton(
-                          tooltip: 'Delete',
-                          onPressed: () => _deleteAcademicYear(year),
-                          icon: const Icon(
-                            Icons.delete_outline,
-                            size: 18,
-                            color: AppColors.red,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            )
-            .toList(),
+        rows: rows.skip(start).take(_yearRowsPerPage).toList(),
+        totalRecords: rows.length,
+        pageIndex: pageIndex,
+        rowsPerPage: _yearRowsPerPage,
+        onPageChanged: (page) => setState(() => _yearPage = page),
+        onRowsPerPageChanged: (size) {
+          setState(() {
+            _yearRowsPerPage = size;
+            _yearPage = 0;
+          });
+        },
+        emptyMessage: 'No academic years created',
       ),
     );
   }
 
   Widget _semesterPanel() {
     if (_selectedYearId == null) {
-      return const SizedBox();
+      return const SizedBox(
+        height: 340,
+        child: Center(
+          child: Text(
+            'Select or create an academic year to manage semesters.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+        ),
+      );
     }
     final semestersAsync = ref.watch(semestersProvider(_selectedYearId!));
     return Column(
@@ -383,55 +422,98 @@ class _AcademicManagementPageState
         ),
         const Divider(),
         semestersAsync.when(
-          loading: () => const Padding(
-            padding: EdgeInsets.all(20),
-            child: Center(child: CircularProgressIndicator()),
+          loading: () => SizedBox(
+            height: 340,
+            child: AppDataTable(
+              columns: const [
+                DataColumn(label: Text('Semester')),
+                DataColumn(label: Text('Status')),
+                DataColumn(label: Text('Actions')),
+              ],
+              rows: const [],
+              totalRecords: 0,
+              pageIndex: _semesterPage,
+              rowsPerPage: _semesterRowsPerPage,
+              onPageChanged: (_) {},
+              onRowsPerPageChanged: (_) {},
+              isLoading: true,
+            ),
           ),
-          error: (error, stack) => Text('Unable to load semesters: $error'),
-          data: (semesters) => semesters.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.all(20),
-                  child: Center(
-                    child: Text(
-                      'No semesters created',
-                      style: TextStyle(color: AppColors.textSecondary),
-                    ),
-                  ),
-                )
-              : Column(
-                  children: semesters
-                      .map(
-                        (semester) => ListTile(
-                          dense: true,
-                          title: Text(semester.name),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (semester.isActive)
-                                const Chip(
-                                  label: Text('Active'),
-                                  backgroundColor: AppColors.primaryLight,
-                                ),
-                              IconButton(
-                                tooltip: 'Edit',
-                                onPressed: () =>
-                                    _editSemester(_selectedYearId!, semester),
-                                icon: const Icon(Icons.edit_outlined),
-                              ),
-                              IconButton(
-                                tooltip: 'Delete',
-                                onPressed: () => _deleteSemester(semester),
-                                icon: const Icon(
-                                  Icons.delete_outline,
-                                  color: AppColors.red,
-                                ),
-                              ),
-                            ],
+          error: (error, stack) => SizedBox(
+            height: 340,
+            child: Center(child: Text('Unable to load semesters: $error')),
+          ),
+          data: (semesters) {
+            final rows = semesters
+                .map(
+                  (semester) => DataRow(
+                    cells: [
+                      DataCell(Text(semester.name)),
+                      DataCell(
+                        Text(
+                          semester.isActive ? 'Active' : 'Inactive',
+                          style: TextStyle(
+                            color: semester.isActive
+                                ? AppColors.primaryDark
+                                : AppColors.textSecondary,
                           ),
                         ),
-                      )
-                      .toList(),
-                ),
+                      ),
+                      DataCell(
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: 'Edit',
+                              onPressed: () =>
+                                  _editSemester(_selectedYearId!, semester),
+                              icon: const Icon(Icons.edit_outlined, size: 18),
+                            ),
+                            IconButton(
+                              tooltip: 'Delete',
+                              onPressed: () => _deleteSemester(semester),
+                              icon: const Icon(
+                                Icons.delete_outline,
+                                size: 18,
+                                color: AppColors.red,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+                .toList();
+            final pageIndex = _boundedPage(
+              _semesterPage,
+              rows.length,
+              _semesterRowsPerPage,
+            );
+            final start = pageIndex * _semesterRowsPerPage;
+            return SizedBox(
+              height: 340,
+              child: AppDataTable(
+                columns: const [
+                  DataColumn(label: Text('Semester')),
+                  DataColumn(label: Text('Status')),
+                  DataColumn(label: Text('Actions')),
+                ],
+                rows: rows.skip(start).take(_semesterRowsPerPage).toList(),
+                totalRecords: rows.length,
+                pageIndex: pageIndex,
+                rowsPerPage: _semesterRowsPerPage,
+                onPageChanged: (page) => setState(() => _semesterPage = page),
+                onRowsPerPageChanged: (size) {
+                  setState(() {
+                    _semesterRowsPerPage = size;
+                    _semesterPage = 0;
+                  });
+                },
+                emptyMessage: 'No semesters created',
+              ),
+            );
+          },
         ),
       ],
     );
@@ -445,13 +527,15 @@ class _AcademicManagementPageState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 12,
+              runSpacing: 8,
               children: [
-                const Expanded(
-                  child: Text(
-                    'Sections',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-                  ),
+                const Text(
+                  'Sections',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                 ),
                 TextButton.icon(
                   onPressed: _addSection,
@@ -462,72 +546,117 @@ class _AcademicManagementPageState
             ),
             const Divider(),
             sectionsAsync.when(
-              loading: () => const Padding(
-                padding: EdgeInsets.all(20),
-                child: Center(child: CircularProgressIndicator()),
+              loading: () => SizedBox(
+                height: 340,
+                child: AppDataTable(
+                  columns: const [
+                    DataColumn(label: Text('Section')),
+                    DataColumn(label: Text('Course')),
+                    DataColumn(label: Text('Year Level')),
+                    DataColumn(label: Text('Actions')),
+                  ],
+                  rows: const [],
+                  totalRecords: 0,
+                  pageIndex: _sectionPage,
+                  rowsPerPage: _sectionRowsPerPage,
+                  onPageChanged: (_) {},
+                  onRowsPerPageChanged: (_) {},
+                  isLoading: true,
+                ),
               ),
-              error: (error, stack) => Text('Unable to load sections: $error'),
-              data: (sections) => sections.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.all(20),
-                      child: Center(
-                        child: Text(
-                          'No sections created',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                      ),
-                    )
-                  : DataTable(
-                      columns: const [
-                        DataColumn(label: Text('Section')),
-                        DataColumn(label: Text('Course')),
-                        DataColumn(label: Text('Year Level')),
-                        DataColumn(label: Text('Actions')),
-                      ],
-                      rows: sections
-                          .map(
-                            (section) => DataRow(
-                              cells: [
-                                DataCell(Text(section.name)),
-                                DataCell(Text(section.course)),
-                                DataCell(
-                                  Text(section.yearLevel?.toString() ?? '-'),
+              error: (error, stack) => SizedBox(
+                height: 340,
+                child: Center(child: Text('Unable to load sections: $error')),
+              ),
+              data: (sections) {
+                final rows = sections
+                    .map(
+                      (section) => DataRow(
+                        cells: [
+                          DataCell(Text(section.name)),
+                          DataCell(
+                            SizedBox(
+                              width: 180,
+                              child: Text(
+                                section.course,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ),
+                          DataCell(Text(section.yearLevel?.toString() ?? '-')),
+                          DataCell(
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: 'Edit',
+                                  onPressed: () => _editSection(section),
+                                  icon: const Icon(
+                                    Icons.edit_outlined,
+                                    size: 18,
+                                  ),
                                 ),
-                                DataCell(
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      IconButton(
-                                        tooltip: 'Edit',
-                                        onPressed: () => _editSection(section),
-                                        icon: const Icon(
-                                          Icons.edit_outlined,
-                                          size: 18,
-                                        ),
-                                      ),
-                                      IconButton(
-                                        tooltip: 'Delete',
-                                        onPressed: () =>
-                                            _deleteSection(section),
-                                        icon: const Icon(
-                                          Icons.delete_outline,
-                                          size: 18,
-                                          color: AppColors.red,
-                                        ),
-                                      ),
-                                    ],
+                                IconButton(
+                                  tooltip: 'Delete',
+                                  onPressed: () => _deleteSection(section),
+                                  icon: const Icon(
+                                    Icons.delete_outline,
+                                    size: 18,
+                                    color: AppColors.red,
                                   ),
                                 ),
                               ],
                             ),
-                          )
-                          .toList(),
-                    ),
+                          ),
+                        ],
+                      ),
+                    )
+                    .toList();
+                final pageIndex = _boundedPage(
+                  _sectionPage,
+                  rows.length,
+                  _sectionRowsPerPage,
+                );
+                final start = pageIndex * _sectionRowsPerPage;
+                return SizedBox(
+                  height: 340,
+                  child: AppDataTable(
+                    columns: const [
+                      DataColumn(label: Text('Section')),
+                      DataColumn(label: Text('Course')),
+                      DataColumn(label: Text('Year Level')),
+                      DataColumn(label: Text('Actions')),
+                    ],
+                    rows: rows.skip(start).take(_sectionRowsPerPage).toList(),
+                    totalRecords: rows.length,
+                    pageIndex: pageIndex,
+                    rowsPerPage: _sectionRowsPerPage,
+                    onPageChanged: (page) =>
+                        setState(() => _sectionPage = page),
+                    onRowsPerPageChanged: (size) {
+                      setState(() {
+                        _sectionRowsPerPage = size;
+                        _sectionPage = 0;
+                      });
+                    },
+                    emptyMessage: 'No sections created',
+                  ),
+                );
+              },
             ),
           ],
         ),
       ),
     );
+  }
+
+  int _boundedPage(int requestedPage, int recordCount, int rowsPerPage) {
+    final totalPages = math.max(
+      1,
+      (recordCount + rowsPerPage - 1) ~/ rowsPerPage,
+    );
+    return requestedPage.clamp(0, totalPages - 1).toInt();
   }
 
   Future<void> _refreshAcademic() async {

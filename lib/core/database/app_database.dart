@@ -363,6 +363,100 @@ class AppDatabase extends _$AppDatabase {
           ]))
           .get();
 
+  Future<DatabasePage<Student>> getStudentsPage({
+    required int limit,
+    required int offset,
+    String search = '',
+    String? course,
+    String? status,
+    int? yearLevel,
+  }) async {
+    final filter = _studentFilter(
+      search: search,
+      course: course,
+      status: status,
+      yearLevel: yearLevel,
+    );
+    final countExpression = students.id.count();
+    final totalRecords =
+        await (selectOnly(students)
+              ..addColumns([countExpression])
+              ..where(filter))
+            .map((row) => row.read(countExpression) ?? 0)
+            .getSingle();
+    final records =
+        await (select(students)
+              ..where((row) => filter)
+              ..orderBy([
+                (row) => OrderingTerm(expression: row.lastName),
+                (row) => OrderingTerm(expression: row.firstName),
+                (row) => OrderingTerm(expression: row.studentNumber),
+              ])
+              ..limit(limit, offset: offset))
+            .get();
+    return DatabasePage(records: records, totalRecords: totalRecords);
+  }
+
+  Future<List<int>> getStudentIds({
+    String search = '',
+    String? course,
+    String? status,
+    int? yearLevel,
+  }) async {
+    final filter = _studentFilter(
+      search: search,
+      course: course,
+      status: status,
+      yearLevel: yearLevel,
+    );
+    final rows =
+        await (selectOnly(students)
+              ..addColumns([students.id])
+              ..where(filter))
+            .get();
+    return rows.map((row) => row.read(students.id)).whereType<int>().toList();
+  }
+
+  Future<List<String>> getStudentCourses() async {
+    final rows =
+        await (selectOnly(students)
+              ..addColumns([students.course])
+              ..groupBy([students.course])
+              ..orderBy([OrderingTerm(expression: students.course)]))
+            .get();
+    return rows
+        .map((row) => row.read(students.course))
+        .whereType<String>()
+        .where((course) => course.isNotEmpty)
+        .toList();
+  }
+
+  Expression<bool> _studentFilter({
+    required String search,
+    String? course,
+    String? status,
+    int? yearLevel,
+  }) {
+    Expression<bool> filter = const Constant(true);
+    final normalizedSearch = search.trim();
+    if (normalizedSearch.isNotEmpty) {
+      final pattern = '%$normalizedSearch%';
+      filter =
+          filter &
+          (students.studentNumber.like(pattern) |
+              students.firstName.like(pattern) |
+              students.middleName.like(pattern) |
+              students.lastName.like(pattern) |
+              students.suffix.like(pattern));
+    }
+    if (course != null) filter = filter & students.course.equals(course);
+    if (status != null) filter = filter & students.status.equals(status);
+    if (yearLevel != null) {
+      filter = filter & students.yearLevel.equals(yearLevel);
+    }
+    return filter;
+  }
+
   Future<int> createStudent({
     required String studentNumber,
     required String firstName,
@@ -484,6 +578,7 @@ class AppDatabase extends _$AppDatabase {
           await enrollStudent(subjectId: subjectId, studentId: studentId);
         }
       }
+
       return updatedCount;
     });
   }
@@ -569,6 +664,39 @@ class AppDatabase extends _$AppDatabase {
     return rows.map((row) => row.readTable(students)).toList();
   }
 
+  Future<DatabasePage<Student>> getEnrolledStudentsPage({
+    required int subjectId,
+    required int limit,
+    required int offset,
+  }) async {
+    final countExpression = subjectEnrollments.id.count();
+    final totalRecords =
+        await (selectOnly(subjectEnrollments)
+              ..addColumns([countExpression])
+              ..where(subjectEnrollments.subjectId.equals(subjectId)))
+            .map((row) => row.read(countExpression) ?? 0)
+            .getSingle();
+    final query = select(students).join([
+      innerJoin(
+        subjectEnrollments,
+        subjectEnrollments.studentId.equalsExp(students.id),
+      ),
+    ]);
+    query
+      ..where(subjectEnrollments.subjectId.equals(subjectId))
+      ..orderBy([
+        OrderingTerm(expression: students.lastName),
+        OrderingTerm(expression: students.firstName),
+        OrderingTerm(expression: students.studentNumber),
+      ])
+      ..limit(limit, offset: offset);
+    final rows = await query.get();
+    return DatabasePage(
+      records: rows.map((row) => row.readTable(students)).toList(),
+      totalRecords: totalRecords,
+    );
+  }
+
   Future<List<GradingPeriod>> getGradingPeriods() => (select(
     gradingPeriods,
   )..orderBy([(row) => OrderingTerm(expression: row.sortOrder)])).get();
@@ -617,16 +745,38 @@ class AppDatabase extends _$AppDatabase {
     String? date,
     required double totalPossibleScore,
   }) async {
-    final count = await (update(assessments)..where((row) => row.id.equals(id)))
-        .write(
-          AssessmentsCompanion(
-            name: Value(name),
-            type: Value(type),
-            date: Value(date),
-            totalPossibleScore: Value(totalPossibleScore),
-          ),
+    return transaction(() async {
+      final existing = await (select(
+        assessments,
+      )..where((row) => row.id.equals(id))).get();
+      if (existing.isEmpty) return false;
+
+      final scores = await getAssessmentScores(id);
+      final scoresAboveMaximum = scores
+          .where(
+            (studentScore) =>
+                studentScore.score != null &&
+                studentScore.score! > totalPossibleScore,
+          )
+          .length;
+      if (scoresAboveMaximum > 0) {
+        throw StateError(
+          'The new maximum is below $scoresAboveMaximum recorded student '
+          'score(s).',
         );
-    return count == 1;
+      }
+
+      final count =
+          await (update(assessments)..where((row) => row.id.equals(id))).write(
+            AssessmentsCompanion(
+              name: Value(name),
+              type: Value(type),
+              date: Value(date),
+              totalPossibleScore: Value(totalPossibleScore),
+            ),
+          );
+      return count == 1;
+    });
   }
 
   Future<int> deleteAssessment(int id) =>
@@ -652,35 +802,70 @@ class AppDatabase extends _$AppDatabase {
     required int studentId,
     required double? score,
   }) async {
-    final existing =
-        await (select(studentAssessmentScores)
-              ..where(
-                (row) =>
-                    row.assessmentId.equals(assessmentId) &
-                    row.studentId.equals(studentId),
-              )
-              ..limit(1))
-            .get();
-    final now = DateTime.now().toIso8601String();
-    if (existing.isEmpty) {
-      await into(studentAssessmentScores).insert(
-        StudentAssessmentScoresCompanion.insert(
-          assessmentId: assessmentId,
-          studentId: studentId,
-          score: Value(score),
-          updatedAt: Value(now),
-        ),
-      );
-    } else {
-      await (update(
-        studentAssessmentScores,
-      )..where((row) => row.id.equals(existing.first.id))).write(
-        StudentAssessmentScoresCompanion(
-          score: Value(score),
-          updatedAt: Value(now),
-        ),
-      );
-    }
+    await transaction(() async {
+      final assessment = await (select(
+        assessments,
+      )..where((row) => row.id.equals(assessmentId))).get();
+      if (assessment.isEmpty) {
+        throw StateError('Assessment $assessmentId does not exist.');
+      }
+      final enrollment =
+          await (select(subjectEnrollments)
+                ..where(
+                  (row) =>
+                      row.subjectId.equals(assessment.first.subjectId) &
+                      row.studentId.equals(studentId),
+                )
+                ..limit(1))
+              .get();
+      if (enrollment.isEmpty) {
+        throw StateError(
+          'Student $studentId is not enrolled in the assessment subject.',
+        );
+      }
+      if (score != null &&
+          (!score.isFinite ||
+              score < 0 ||
+              score > assessment.first.totalPossibleScore)) {
+        throw ArgumentError.value(
+          score,
+          'score',
+          'Must be between zero and the assessment maximum.',
+        );
+      }
+
+      final existing =
+          await (select(studentAssessmentScores)
+                ..where(
+                  (row) =>
+                      row.assessmentId.equals(assessmentId) &
+                      row.studentId.equals(studentId),
+                )
+                ..limit(1))
+              .get();
+      if (existing.isNotEmpty && existing.first.score == score) return;
+
+      final now = DateTime.now().toIso8601String();
+      if (existing.isEmpty) {
+        await into(studentAssessmentScores).insert(
+          StudentAssessmentScoresCompanion.insert(
+            assessmentId: assessmentId,
+            studentId: studentId,
+            score: Value(score),
+            updatedAt: Value(now),
+          ),
+        );
+      } else {
+        await (update(
+          studentAssessmentScores,
+        )..where((row) => row.id.equals(existing.first.id))).write(
+          StudentAssessmentScoresCompanion(
+            score: Value(score),
+            updatedAt: Value(now),
+          ),
+        );
+      }
+    });
   }
 
   Future<List<AttendanceSession>> getAttendanceSessions({
@@ -715,6 +900,40 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
+  Future<int> getOrCreateAttendanceSession({
+    required int subjectId,
+    required int gradingPeriodId,
+    required String sessionDate,
+    String name = 'Attendance',
+  }) {
+    return transaction(() async {
+      final existing =
+          await (select(attendanceSessions)
+                ..where(
+                  (row) =>
+                      row.subjectId.equals(subjectId) &
+                      row.gradingPeriodId.equals(gradingPeriodId) &
+                      row.sessionDate.equals(sessionDate),
+                )
+                ..orderBy([
+                  (row) => OrderingTerm(expression: row.sortOrder),
+                  (row) => OrderingTerm(expression: row.id),
+                ])
+                ..limit(1))
+              .get();
+      if (existing.isNotEmpty) return existing.first.id;
+
+      return into(attendanceSessions).insert(
+        AttendanceSessionsCompanion.insert(
+          subjectId: subjectId,
+          gradingPeriodId: gradingPeriodId,
+          sessionDate: sessionDate,
+          name: Value(name),
+        ),
+      );
+    });
+  }
+
   Future<int> deleteAttendanceSession(int id) =>
       (delete(attendanceSessions)..where((row) => row.id.equals(id))).go();
 
@@ -723,32 +942,62 @@ class AppDatabase extends _$AppDatabase {
     required int studentId,
     required String code,
   }) async {
-    final existing =
-        await (select(studentAttendance)
-              ..where(
-                (row) =>
-                    row.attendanceSessionId.equals(attendanceSessionId) &
-                    row.studentId.equals(studentId),
-              )
-              ..limit(1))
-            .get();
-    final now = DateTime.now().toIso8601String();
-    if (existing.isEmpty) {
-      await into(studentAttendance).insert(
-        StudentAttendanceCompanion.insert(
-          attendanceSessionId: attendanceSessionId,
-          studentId: studentId,
-          code: code,
-          updatedAt: Value(now),
-        ),
-      );
-    } else {
-      await (update(
-        studentAttendance,
-      )..where((row) => row.id.equals(existing.first.id))).write(
-        StudentAttendanceCompanion(code: Value(code), updatedAt: Value(now)),
-      );
-    }
+    await transaction(() async {
+      final session = await (select(
+        attendanceSessions,
+      )..where((row) => row.id.equals(attendanceSessionId))).get();
+      if (session.isEmpty) {
+        throw StateError(
+          'Attendance session $attendanceSessionId does not exist.',
+        );
+      }
+      final enrollment =
+          await (select(subjectEnrollments)
+                ..where(
+                  (row) =>
+                      row.subjectId.equals(session.first.subjectId) &
+                      row.studentId.equals(studentId),
+                )
+                ..limit(1))
+              .get();
+      if (enrollment.isEmpty) {
+        throw StateError(
+          'Student $studentId is not enrolled in the attendance subject.',
+        );
+      }
+      if (!const {'P', 'L', 'A', 'E'}.contains(code)) {
+        throw ArgumentError.value(code, 'code', 'Unsupported attendance code.');
+      }
+
+      final existing =
+          await (select(studentAttendance)
+                ..where(
+                  (row) =>
+                      row.attendanceSessionId.equals(attendanceSessionId) &
+                      row.studentId.equals(studentId),
+                )
+                ..limit(1))
+              .get();
+      if (existing.isNotEmpty && existing.first.code == code) return;
+
+      final now = DateTime.now().toIso8601String();
+      if (existing.isEmpty) {
+        await into(studentAttendance).insert(
+          StudentAttendanceCompanion.insert(
+            attendanceSessionId: attendanceSessionId,
+            studentId: studentId,
+            code: code,
+            updatedAt: Value(now),
+          ),
+        );
+      } else {
+        await (update(
+          studentAttendance,
+        )..where((row) => row.id.equals(existing.first.id))).write(
+          StudentAttendanceCompanion(code: Value(code), updatedAt: Value(now)),
+        );
+      }
+    });
   }
 
   Future<List<StudentAttendanceData>> getStudentAttendance(
@@ -756,6 +1005,44 @@ class AppDatabase extends _$AppDatabase {
   ) => (select(
     studentAttendance,
   )..where((row) => row.attendanceSessionId.equals(attendanceSessionId))).get();
+
+  Future<List<StudentAttendanceData>> getStudentAttendanceForStudents({
+    required int attendanceSessionId,
+    required Iterable<int> studentIds,
+  }) {
+    final ids = studentIds.toList();
+    if (ids.isEmpty) return Future.value(const []);
+    return (select(studentAttendance)..where(
+          (row) =>
+              row.attendanceSessionId.equals(attendanceSessionId) &
+              row.studentId.isIn(ids),
+        ))
+        .get();
+  }
+
+  Future<Map<String, int>> getAttendanceCodeCounts(
+    int attendanceSessionId,
+  ) async {
+    final countExpression = studentAttendance.id.count();
+    final rows =
+        await (selectOnly(studentAttendance)
+              ..addColumns([studentAttendance.code, countExpression])
+              ..where(
+                studentAttendance.attendanceSessionId.equals(
+                  attendanceSessionId,
+                ),
+              )
+              ..groupBy([studentAttendance.code]))
+            .get();
+    final counts = <String, int>{};
+    for (final row in rows) {
+      final code = row.read(studentAttendance.code);
+      if (code != null) {
+        counts[code] = row.read(countExpression) ?? 0;
+      }
+    }
+    return counts;
+  }
 
   Future<List<StudentAttendanceData>> getStudentAttendanceForSessions(
     Iterable<int> attendanceSessionIds,
@@ -807,37 +1094,78 @@ class AppDatabase extends _$AppDatabase {
     required double? score,
     String remarks = '',
   }) async {
-    final existing =
-        await (select(studentIndependentLearningScores)
-              ..where(
-                (row) =>
-                    row.recordId.equals(recordId) &
-                    row.studentId.equals(studentId),
-              )
-              ..limit(1))
-            .get();
-    final now = DateTime.now().toIso8601String();
-    if (existing.isEmpty) {
-      await into(studentIndependentLearningScores).insert(
-        StudentIndependentLearningScoresCompanion.insert(
-          recordId: recordId,
-          studentId: studentId,
-          score: Value(score),
-          remarks: Value(remarks),
-          updatedAt: Value(now),
-        ),
-      );
-    } else {
-      await (update(
-        studentIndependentLearningScores,
-      )..where((row) => row.id.equals(existing.first.id))).write(
-        StudentIndependentLearningScoresCompanion(
-          score: Value(score),
-          remarks: Value(remarks),
-          updatedAt: Value(now),
-        ),
-      );
-    }
+    await transaction(() async {
+      final record = await (select(
+        independentLearningRecords,
+      )..where((row) => row.id.equals(recordId))).get();
+      if (record.isEmpty) {
+        throw StateError(
+          'Independent learning record $recordId does not exist.',
+        );
+      }
+      final enrollment =
+          await (select(subjectEnrollments)
+                ..where(
+                  (row) =>
+                      row.subjectId.equals(record.first.subjectId) &
+                      row.studentId.equals(studentId),
+                )
+                ..limit(1))
+              .get();
+      if (enrollment.isEmpty) {
+        throw StateError(
+          'Student $studentId is not enrolled in the activity subject.',
+        );
+      }
+      if (score != null &&
+          (!score.isFinite ||
+              score < 0 ||
+              score > record.first.totalPossibleScore)) {
+        throw ArgumentError.value(
+          score,
+          'score',
+          'Must be between zero and the activity maximum.',
+        );
+      }
+
+      final existing =
+          await (select(studentIndependentLearningScores)
+                ..where(
+                  (row) =>
+                      row.recordId.equals(recordId) &
+                      row.studentId.equals(studentId),
+                )
+                ..limit(1))
+              .get();
+      if (existing.isNotEmpty &&
+          existing.first.score == score &&
+          existing.first.remarks == remarks) {
+        return;
+      }
+
+      final now = DateTime.now().toIso8601String();
+      if (existing.isEmpty) {
+        await into(studentIndependentLearningScores).insert(
+          StudentIndependentLearningScoresCompanion.insert(
+            recordId: recordId,
+            studentId: studentId,
+            score: Value(score),
+            remarks: Value(remarks),
+            updatedAt: Value(now),
+          ),
+        );
+      } else {
+        await (update(
+          studentIndependentLearningScores,
+        )..where((row) => row.id.equals(existing.first.id))).write(
+          StudentIndependentLearningScoresCompanion(
+            score: Value(score),
+            remarks: Value(remarks),
+            updatedAt: Value(now),
+          ),
+        );
+      }
+    });
   }
 
   Future<List<StudentIndependentLearningScore>> getIndependentLearningScores(
@@ -979,9 +1307,10 @@ class AppDatabase extends _$AppDatabase {
               )
               ..limit(1))
             .get();
+    if (existing.isNotEmpty && existing.first.grade == grade) return;
     final now = DateTime.now().toIso8601String();
     if (existing.isEmpty) {
-      await into(termGrades).insert(
+      await into(termGrades).insertOnConflictUpdate(
         TermGradesCompanion.insert(
           subjectId: subjectId,
           studentId: studentId,
@@ -1015,6 +1344,24 @@ class AppDatabase extends _$AppDatabase {
     required int gradingPeriodId,
     required List<({int studentId, int rank, double grade})> rankings,
   }) async {
+    final existing =
+        await (select(gradeRankings)..where(
+              (row) =>
+                  row.subjectId.equals(subjectId) &
+                  row.gradingPeriodId.equals(gradingPeriodId),
+            ))
+            .get();
+    final updatedByStudent = {
+      for (final ranking in rankings)
+        ranking.studentId: (ranking.rank, ranking.grade),
+    };
+    if (existing.length == rankings.length &&
+        existing.every(
+          (row) => updatedByStudent[row.studentId] == (row.rank, row.grade),
+        )) {
+      return;
+    }
+
     await transaction(() async {
       await (delete(gradeRankings)..where(
             (row) =>
@@ -1056,6 +1403,41 @@ class AppDatabase extends _$AppDatabase {
             ..orderBy([(row) => OrderingTerm(expression: row.rank)]))
           .get();
 
+  Future<DatabasePage<(GradeRanking, Student)>> getRankingsPage({
+    required int subjectId,
+    required int gradingPeriodId,
+    required int limit,
+    required int offset,
+  }) async {
+    final filter =
+        gradeRankings.subjectId.equals(subjectId) &
+        gradeRankings.gradingPeriodId.equals(gradingPeriodId);
+    final countExpression = gradeRankings.id.count();
+    final totalRecords =
+        await (selectOnly(gradeRankings)
+              ..addColumns([countExpression])
+              ..where(filter))
+            .map((row) => row.read(countExpression) ?? 0)
+            .getSingle();
+    final query = select(gradeRankings).join([
+      innerJoin(students, students.id.equalsExp(gradeRankings.studentId)),
+    ]);
+    query
+      ..where(filter)
+      ..orderBy([
+        OrderingTerm(expression: gradeRankings.rank),
+        OrderingTerm(expression: gradeRankings.studentId),
+      ])
+      ..limit(limit, offset: offset);
+    final rows = await query.get();
+    return DatabasePage(
+      records: rows
+          .map((row) => (row.readTable(gradeRankings), row.readTable(students)))
+          .toList(),
+      totalRecords: totalRecords,
+    );
+  }
+
   Future<String?> getApplicationSetting(String key) async {
     final rows =
         await (select(applicationSettings)
@@ -1091,4 +1473,11 @@ class AppDatabase extends _$AppDatabase {
       );
     }
   }
+}
+
+class DatabasePage<T> {
+  const DatabasePage({required this.records, required this.totalRecords});
+
+  final List<T> records;
+  final int totalRecords;
 }

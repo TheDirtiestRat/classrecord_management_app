@@ -11,6 +11,7 @@ import 'package:printing/printing.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/database/database_provider.dart';
+import '../../../shared/widgets/app_data_table.dart';
 import '../../academic_management/providers/academic_management_providers.dart';
 import '../../grade_sheets/providers/grade_sheet_providers.dart';
 import '../data/pdf_report_builder.dart';
@@ -167,6 +168,8 @@ class _ReportsPageState extends ConsumerState<ReportsPage> {
                             padding: const EdgeInsets.only(bottom: 4),
                             child: Text(
                               line,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 color: AppColors.textSecondary,
                               ),
@@ -177,22 +180,45 @@ class _ReportsPageState extends ConsumerState<ReportsPage> {
                         if (_lastReport!.headers.isNotEmpty)
                           SingleChildScrollView(
                             scrollDirection: Axis.horizontal,
-                            child: DataTable(
-                              columns: _lastReport!.headers
-                                  .map(
-                                    (header) => DataColumn(label: Text(header)),
-                                  )
-                                  .toList(),
-                              rows: _lastReport!.rows
-                                  .take(8)
-                                  .map(
-                                    (row) => DataRow(
-                                      cells: row
-                                          .map((cell) => DataCell(Text(cell)))
-                                          .toList(),
-                                    ),
-                                  )
-                                  .toList(),
+                            child: AppTableTheme(
+                              child: DataTable(
+                                columns: _lastReport!.headers
+                                    .map(
+                                      (header) => DataColumn(
+                                        label: SizedBox(
+                                          width: 150,
+                                          child: Text(
+                                            header,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                    .toList(),
+                                rows: _lastReport!.rows
+                                    .take(8)
+                                    .map(
+                                      (row) => DataRow(
+                                        cells: row
+                                            .map(
+                                              (cell) => DataCell(
+                                                SizedBox(
+                                                  width: 150,
+                                                  child: Text(
+                                                    cell,
+                                                    maxLines: 2,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                              ),
+                                            )
+                                            .toList(),
+                                      ),
+                                    )
+                                    .toList(),
+                              ),
                             ),
                           ),
                         if (_lastReport!.rows.length > 8)

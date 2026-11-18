@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -9,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/database/database_provider.dart';
+import '../../../shared/widgets/app_data_table.dart';
 import '../../academic_management/providers/academic_management_providers.dart';
 import '../providers/students_providers.dart';
 
@@ -21,23 +23,48 @@ class StudentsPage extends ConsumerStatefulWidget {
 
 class _StudentsPageState extends ConsumerState<StudentsPage> {
   final _searchController = TextEditingController();
-  final _tableScrollController = ScrollController();
+  Timer? _searchDebounce;
   String _search = '';
   String _courseFilter = 'All';
   String _statusFilter = 'All';
   int? _yearFilter;
+  int _pageIndex = 0;
+  int _rowsPerPage = 10;
   final Set<int> _selectedStudentIds = {};
+
+  static const _studentColumns = [
+    DataColumn(label: Text('Student Number')),
+    DataColumn(label: Text('Student Name')),
+    DataColumn(label: Text('Course')),
+    DataColumn(label: Text('Year')),
+    DataColumn(label: Text('Status')),
+    DataColumn(label: Text('Actions')),
+  ];
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
-    _tableScrollController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final studentsAsync = ref.watch(studentsProvider);
+    final coursesAsync = ref.watch(studentCourseOptionsProvider);
+    final courseFilter =
+        _courseFilter == 'All' ||
+            (coursesAsync.value ?? const <String>[]).contains(_courseFilter)
+        ? _courseFilter
+        : 'All';
+    final query = StudentDirectoryQuery(
+      search: _search,
+      course: courseFilter == 'All' ? null : courseFilter,
+      status: _statusFilter == 'All' ? null : _statusFilter,
+      yearLevel: _yearFilter,
+      pageIndex: _pageIndex,
+      rowsPerPage: _rowsPerPage,
+    );
+    final studentsAsync = ref.watch(studentDirectoryPageProvider(query));
     final sectionsAsync = ref.watch(sectionsProvider);
     final subjectsAsync = ref.watch(subjectsProvider);
 
@@ -46,137 +73,141 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 12,
+            runSpacing: 12,
             children: [
-              const Expanded(
-                child: Text(
-                  'Students',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
-                ),
+              const Text(
+                'Students',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
               ),
-              OutlinedButton.icon(
-                onPressed: () => _importCsv(context),
-                icon: const Icon(Icons.upload_outlined),
-                label: const Text('Import CSV'),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: () => _exportCsv(context),
-                icon: const Icon(Icons.download_outlined),
-                label: const Text('Export CSV'),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                onPressed: () => _openStudentDialog(
-                  context,
-                  ref,
-                  sectionsAsync: sectionsAsync,
-                ),
-                icon: const Icon(Icons.person_add_alt_1),
-                label: const Text('Add Student'),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () => _importCsv(context),
+                    icon: const Icon(Icons.upload_outlined),
+                    label: const Text('Import CSV'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _exportCsv(context),
+                    icon: const Icon(Icons.download_outlined),
+                    label: const Text('Export CSV'),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: () => _openStudentDialog(
+                      context,
+                      ref,
+                      sectionsAsync: sectionsAsync,
+                    ),
+                    icon: const Icon(Icons.person_add_alt_1),
+                    label: const Text('Add Student'),
+                  ),
+                ],
               ),
             ],
           ),
           const SizedBox(height: 18),
-          studentsAsync.when(
-            loading: () => const LinearProgressIndicator(),
-            error: (error, stack) => Text('Unable to load students: $error'),
-            data: (students) {
-              final courses = {
-                'All',
-                ...students
-                    .map((student) => student.course)
-                    .where((course) => course.isNotEmpty),
-              }.toList();
-              final visible = students.where((student) {
-                final name =
-                    '${student.studentNumber} ${student.firstName} '
-                            '${student.middleName} ${student.lastName} '
-                            '${student.suffix}'
-                        .toLowerCase();
-                final matchesSearch =
-                    _search.isEmpty || name.contains(_search.toLowerCase());
-                final matchesCourse =
-                    _courseFilter == 'All' || student.course == _courseFilter;
-                final matchesStatus =
-                    _statusFilter == 'All' || student.status == _statusFilter;
-                final matchesYear =
-                    _yearFilter == null || student.yearLevel == _yearFilter;
-                return matchesSearch &&
-                    matchesCourse &&
-                    matchesStatus &&
-                    matchesYear;
-              }).toList();
-
-              return Expanded(
-                child: Card(
-                  margin: EdgeInsets.zero,
-                  child: Padding(
-                    padding: const EdgeInsets.all(18),
-                    child: Column(
-                      children: [
-                        if (_selectedStudentIds.isNotEmpty) ...[
-                          Row(
-                            children: [
-                              Text(
-                                '${_selectedStudentIds.length} students selected',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const Spacer(),
-                              TextButton(
-                                onPressed: () =>
-                                    setState(_selectedStudentIds.clear),
-                                child: const Text('Clear selection'),
-                              ),
-                              const SizedBox(width: 8),
-                              ElevatedButton.icon(
-                                onPressed: () =>
-                                    _openBatchUpdateDialog(context),
-                                icon: const Icon(Icons.edit_outlined),
-                                label: const Text('Batch Update'),
-                              ),
-                            ],
+          Expanded(
+            child: Card(
+              margin: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  children: [
+                    if (_selectedStudentIds.isNotEmpty) ...[
+                      Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 12,
+                        runSpacing: 8,
+                        children: [
+                          Text(
+                            '${_selectedStudentIds.length} students selected',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
-                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: () =>
+                                setState(_selectedStudentIds.clear),
+                            child: const Text('Clear selection'),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () => _openBatchUpdateDialog(context),
+                            icon: const Icon(Icons.edit_outlined),
+                            label: const Text('Batch Update'),
+                          ),
                         ],
-                        Row(
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final searchWidth = constraints.maxWidth < 760
+                            ? constraints.maxWidth
+                            : 320.0;
+                        return Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
                           children: [
-                            Expanded(
+                            SizedBox(
+                              width: searchWidth,
                               child: TextField(
                                 controller: _searchController,
-                                onChanged: (value) =>
-                                    setState(() => _search = value),
+                                onChanged: _onSearchChanged,
                                 decoration: const InputDecoration(
                                   hintText: 'Search student number or name',
                                   prefixIcon: Icon(Icons.search),
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 12),
                             SizedBox(
                               width: 180,
-                              child: DropdownButtonFormField<String>(
-                                initialValue: _courseFilter,
-                                isExpanded: true,
-                                decoration: const InputDecoration(
-                                  labelText: 'Course',
+                              child: coursesAsync.when(
+                                loading: () => const LinearProgressIndicator(),
+                                error: (error, stack) => Text(
+                                  'Unable to load courses: $error',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                items: courses
-                                    .map(
-                                      (course) => DropdownMenuItem(
-                                        value: course,
-                                        child: Text(course),
+                                data: (courses) {
+                                  final courseValue =
+                                      courses.contains(_courseFilter)
+                                      ? _courseFilter
+                                      : 'All';
+                                  return DropdownButtonFormField<String>(
+                                    key: ValueKey(courseValue),
+                                    initialValue: courseValue,
+                                    isExpanded: true,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Course',
+                                    ),
+                                    items: [
+                                      const DropdownMenuItem(
+                                        value: 'All',
+                                        child: Text('All'),
                                       ),
-                                    )
-                                    .toList(),
-                                onChanged: (value) => setState(
-                                  () => _courseFilter = value ?? 'All',
-                                ),
+                                      ...courses.map(
+                                        (course) => DropdownMenuItem(
+                                          value: course,
+                                          child: Text(
+                                            course,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                    onChanged: (value) {
+                                      setState(() {
+                                        _courseFilter = value ?? 'All';
+                                        _pageIndex = 0;
+                                      });
+                                    },
+                                  );
+                                },
                               ),
                             ),
-                            const SizedBox(width: 12),
                             SizedBox(
                               width: 140,
                               child: DropdownButtonFormField<String>(
@@ -199,12 +230,14 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
                                     child: Text('Inactive'),
                                   ),
                                 ],
-                                onChanged: (value) => setState(
-                                  () => _statusFilter = value ?? 'All',
-                                ),
+                                onChanged: (value) {
+                                  setState(() {
+                                    _statusFilter = value ?? 'All';
+                                    _pageIndex = 0;
+                                  });
+                                },
                               ),
                             ),
-                            const SizedBox(width: 12),
                             SizedBox(
                               width: 150,
                               child: DropdownButtonFormField<int?>(
@@ -235,188 +268,198 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
                                     child: Text('Year 4'),
                                   ),
                                 ],
-                                onChanged: (value) =>
-                                    setState(() => _yearFilter = value),
+                                onChanged: (value) {
+                                  setState(() {
+                                    _yearFilter = value;
+                                    _pageIndex = 0;
+                                  });
+                                },
                               ),
                             ),
                           ],
-                        ),
-                        const SizedBox(height: 12),
-                        Expanded(
-                          child: visible.isEmpty
-                              ? const Center(
-                                  child: Text(
-                                    'No students found',
-                                    style: TextStyle(
-                                      color: AppColors.textSecondary,
-                                    ),
-                                  ),
-                                )
-                              : Scrollbar(
-                                  controller: _tableScrollController,
-                                  thumbVisibility: true,
-                                  child: SingleChildScrollView(
-                                    controller: _tableScrollController,
-                                    scrollDirection: Axis.horizontal,
-                                    child: SingleChildScrollView(
-                                      child: DataTable(
-                                        headingRowHeight: 44,
-                                        dataRowMinHeight: 48,
-                                        dataRowMaxHeight: 48,
-                                        onSelectAll: (selected) {
-                                          setState(() {
-                                            if (selected == true) {
-                                              _selectedStudentIds.addAll(
-                                                visible.map(
-                                                  (student) => student.id,
-                                                ),
-                                              );
-                                            } else {
-                                              _selectedStudentIds.removeAll(
-                                                visible.map(
-                                                  (student) => student.id,
-                                                ),
-                                              );
-                                            }
-                                          });
-                                        },
-                                        columns: const [
-                                          DataColumn(
-                                            label: Text('Student Number'),
-                                          ),
-                                          DataColumn(
-                                            label: Text('Student Name'),
-                                          ),
-                                          DataColumn(label: Text('Course')),
-                                          DataColumn(label: Text('Year')),
-                                          DataColumn(label: Text('Status')),
-                                          DataColumn(label: Text('Actions')),
-                                        ],
-                                        rows: visible.map((student) {
-                                          final name =
-                                              [
-                                                    student.firstName,
-                                                    student.middleName,
-                                                    student.lastName,
-                                                    student.suffix,
-                                                  ]
-                                                  .where(
-                                                    (part) => part.isNotEmpty,
-                                                  )
-                                                  .join(' ');
-                                          return DataRow(
-                                            selected: _selectedStudentIds
-                                                .contains(student.id),
-                                            onSelectChanged: (selected) {
-                                              setState(() {
-                                                if (selected == true) {
-                                                  _selectedStudentIds.add(
-                                                    student.id,
-                                                  );
-                                                } else {
-                                                  _selectedStudentIds.remove(
-                                                    student.id,
-                                                  );
-                                                }
-                                              });
-                                            },
-                                            cells: [
-                                              DataCell(
-                                                Text(
-                                                  student.studentNumber,
-                                                  style: const TextStyle(
-                                                    fontWeight: FontWeight.w700,
-                                                  ),
-                                                ),
-                                              ),
-                                              DataCell(
-                                                SizedBox(
-                                                  width: 220,
-                                                  child: Text(name),
-                                                ),
-                                              ),
-                                              DataCell(Text(student.course)),
-                                              DataCell(
-                                                Text(
-                                                  student.yearLevel
-                                                          ?.toString() ??
-                                                      '-',
-                                                ),
-                                              ),
-                                              DataCell(
-                                                Chip(
-                                                  label: Text(student.status),
-                                                  backgroundColor:
-                                                      student.status == 'Active'
-                                                      ? AppColors.primaryLight
-                                                      : AppColors.background,
-                                                ),
-                                              ),
-                                              DataCell(
-                                                Row(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: [
-                                                    IconButton(
-                                                      tooltip:
-                                                          'Assign subjects',
-                                                      onPressed: () =>
-                                                          _openEnrollmentDialog(
-                                                            context,
-                                                            student,
-                                                            subjectsAsync,
-                                                          ),
-                                                      icon: const Icon(
-                                                        Icons
-                                                            .assignment_ind_outlined,
-                                                      ),
-                                                    ),
-                                                    IconButton(
-                                                      tooltip: 'Edit',
-                                                      onPressed: () =>
-                                                          _openStudentDialog(
-                                                            context,
-                                                            ref,
-                                                            student: student,
-                                                            sectionsAsync:
-                                                                sectionsAsync,
-                                                          ),
-                                                      icon: const Icon(
-                                                        Icons.edit_outlined,
-                                                      ),
-                                                    ),
-                                                    IconButton(
-                                                      tooltip: 'Delete',
-                                                      onPressed: () =>
-                                                          _deleteStudent(
-                                                            context,
-                                                            student,
-                                                          ),
-                                                      icon: const Icon(
-                                                        Icons.delete_outline,
-                                                        color: AppColors.red,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ],
-                                          );
-                                        }).toList(),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                        ),
-                      ],
+                        );
+                      },
                     ),
-                  ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: studentsAsync.when(
+                        loading: () => AppDataTable(
+                          columns: _studentColumns,
+                          rows: const [],
+                          totalRecords: 0,
+                          pageIndex: _pageIndex,
+                          rowsPerPage: _rowsPerPage,
+                          onPageChanged: (_) {},
+                          onRowsPerPageChanged: (_) {},
+                          isLoading: true,
+                        ),
+                        error: (error, stack) => Center(
+                          child: Text('Unable to load students: $error'),
+                        ),
+                        data: (page) => AppDataTable(
+                          columns: _studentColumns,
+                          rows: page.records
+                              .map(
+                                (student) => _studentRow(
+                                  student,
+                                  subjectsAsync,
+                                  sectionsAsync,
+                                ),
+                              )
+                              .toList(),
+                          totalRecords: page.totalRecords,
+                          pageIndex: _pageIndex,
+                          rowsPerPage: _rowsPerPage,
+                          onPageChanged: (pageIndex) =>
+                              setState(() => _pageIndex = pageIndex),
+                          onRowsPerPageChanged: (rowsPerPage) {
+                            setState(() {
+                              _rowsPerPage = rowsPerPage;
+                              _pageIndex = 0;
+                            });
+                          },
+                          onSelectAll: (selected) =>
+                              _toggleSelectAll(query, selected),
+                          showCheckboxColumn: true,
+                          emptyMessage: 'No students found',
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              );
-            },
+              ),
+            ),
           ),
         ],
       ),
+    );
+  }
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 250), () {
+      if (!mounted) return;
+      setState(() {
+        _search = value;
+        _pageIndex = 0;
+      });
+    });
+  }
+
+  Future<void> _toggleSelectAll(
+    StudentDirectoryQuery query,
+    bool? selected,
+  ) async {
+    try {
+      final database = await ref.read(appDatabaseProvider.future);
+      final ids = await database.getStudentIds(
+        search: query.search,
+        course: query.course,
+        status: query.status,
+        yearLevel: query.yearLevel,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (selected == true) {
+          _selectedStudentIds.addAll(ids);
+        } else {
+          _selectedStudentIds.removeAll(ids);
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to update student selection: $error'),
+          backgroundColor: AppColors.red,
+        ),
+      );
+    }
+  }
+
+  DataRow _studentRow(
+    Student student,
+    AsyncValue<List<Subject>> subjectsAsync,
+    AsyncValue<List<Section>> sectionsAsync,
+  ) {
+    final name = [
+      student.firstName,
+      student.middleName,
+      student.lastName,
+      student.suffix,
+    ].where((part) => part.isNotEmpty).join(' ');
+    return DataRow(
+      selected: _selectedStudentIds.contains(student.id),
+      onSelectChanged: (selected) {
+        setState(() {
+          if (selected == true) {
+            _selectedStudentIds.add(student.id);
+          } else {
+            _selectedStudentIds.remove(student.id);
+          }
+        });
+      },
+      cells: [
+        DataCell(
+          Text(
+            student.studentNumber,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+        DataCell(
+          SizedBox(
+            width: 220,
+            child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+        ),
+        DataCell(
+          SizedBox(
+            width: 150,
+            child: Text(
+              student.course,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ),
+        DataCell(Text(student.yearLevel?.toString() ?? '-')),
+        DataCell(
+          Chip(
+            label: Text(student.status),
+            backgroundColor: student.status == 'Active'
+                ? AppColors.primaryLight
+                : AppColors.background,
+          ),
+        ),
+        DataCell(
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'Assign subjects',
+                onPressed: () =>
+                    _openEnrollmentDialog(context, student, subjectsAsync),
+                icon: const Icon(Icons.assignment_ind_outlined),
+              ),
+              IconButton(
+                tooltip: 'Edit',
+                onPressed: () => _openStudentDialog(
+                  context,
+                  ref,
+                  student: student,
+                  sectionsAsync: sectionsAsync,
+                ),
+                icon: const Icon(Icons.edit_outlined),
+              ),
+              IconButton(
+                tooltip: 'Delete',
+                onPressed: () => _deleteStudent(context, student),
+                icon: const Icon(Icons.delete_outline, color: AppColors.red),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -954,6 +997,9 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
     courseController.dispose();
     yearController.dispose();
     ref.invalidate(studentsProvider);
+    ref.invalidate(studentDirectoryPageProvider);
+    ref.invalidate(studentCourseOptionsProvider);
+    if (mounted) setState(() => _pageIndex = 0);
   }
 
   Future<void> _deleteStudent(BuildContext context, Student student) async {
@@ -986,6 +1032,14 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
     final database = await ref.read(appDatabaseProvider.future);
     await database.deleteStudent(student.id);
     ref.invalidate(studentsProvider);
+    ref.invalidate(studentDirectoryPageProvider);
+    ref.invalidate(studentCourseOptionsProvider);
+    if (mounted) {
+      setState(() {
+        _selectedStudentIds.remove(student.id);
+        _pageIndex = 0;
+      });
+    }
   }
 
   Future<void> _openEnrollmentDialog(
@@ -1163,6 +1217,9 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
       }
     });
     ref.invalidate(studentsProvider);
+    ref.invalidate(studentDirectoryPageProvider);
+    ref.invalidate(studentCourseOptionsProvider);
+    if (mounted) setState(() => _pageIndex = 0);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('$imported student rows processed.')),

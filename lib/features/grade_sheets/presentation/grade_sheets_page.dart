@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/theme/app_colors.dart';
+import '../../../core/database/app_database.dart';
 import '../../../core/database/database_provider.dart';
 import '../../../core/services/grade_computation_service.dart';
 import '../../../core/services/term_grade_calculation_service.dart';
@@ -181,6 +182,10 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
     with AutomaticKeepAliveClientMixin {
   final _tableScrollController = ScrollController();
   final _tableVerticalScrollController = ScrollController();
+  final _pendingGradeQueries = <GradeSheetQuery>{};
+  final _pendingSubjects = <int>{};
+  bool _pendingAllSubjects = false;
+  Future<void>? _gradeRecalculation;
 
   @override
   bool get wantKeepAlive => true;
@@ -200,6 +205,94 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
         backgroundColor: AppColors.red,
       ),
     );
+  }
+
+  void _showRecalculationError(Object error) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Changes saved, but grade recalculation failed: $error'),
+        backgroundColor: AppColors.red,
+      ),
+    );
+  }
+
+  Future<void> _recalculateGrades(
+    AppDatabase database, {
+    GradeSheetQuery? query,
+    int? subjectId,
+    bool allSubjects = false,
+  }) {
+    if (allSubjects) {
+      _pendingAllSubjects = true;
+    } else if (subjectId != null) {
+      _pendingSubjects.add(subjectId);
+    } else if (query != null) {
+      _pendingGradeQueries.add(query);
+    }
+
+    final running = _gradeRecalculation;
+    if (running != null) return running;
+
+    final calculation = _drainGradeRecalculations(database);
+    _gradeRecalculation = calculation;
+    return calculation;
+  }
+
+  Future<void> _drainGradeRecalculations(AppDatabase database) async {
+    try {
+      while (_pendingAllSubjects ||
+          _pendingSubjects.isNotEmpty ||
+          _pendingGradeQueries.isNotEmpty) {
+        final queries = <GradeSheetQuery>{};
+        if (_pendingAllSubjects) {
+          _pendingAllSubjects = false;
+          _pendingSubjects.clear();
+          _pendingGradeQueries.clear();
+          final subjects = await database.getAllSubjects();
+          final periods = await database.getGradingPeriods();
+          queries.addAll([
+            for (final subject in subjects)
+              for (final period in periods)
+                GradeSheetQuery(
+                  subjectId: subject.id,
+                  gradingPeriodId: period.id,
+                ),
+          ]);
+        } else if (_pendingSubjects.isNotEmpty) {
+          final subjects = _pendingSubjects.toList();
+          _pendingSubjects.clear();
+          final periods = await database.getGradingPeriods();
+          queries.addAll([
+            for (final subjectId in subjects)
+              for (final period in periods)
+                GradeSheetQuery(
+                  subjectId: subjectId,
+                  gradingPeriodId: period.id,
+                ),
+          ]);
+        }
+        queries.addAll(_pendingGradeQueries);
+        _pendingGradeQueries.clear();
+
+        for (final query in queries) {
+          try {
+            await const TermGradeCalculationService().computeAndSave(
+              database: database,
+              subjectId: query.subjectId,
+              gradingPeriodId: query.gradingPeriodId,
+            );
+            if (mounted) ref.invalidate(gradeSheetScoresProvider(query));
+          } catch (error) {
+            _showRecalculationError(error);
+          }
+        }
+      }
+    } catch (error) {
+      _showRecalculationError(error);
+    } finally {
+      _gradeRecalculation = null;
+    }
   }
 
   @override
@@ -260,14 +353,28 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                             runSpacing: 8,
                             children: [
                               ElevatedButton.icon(
-                                onPressed: () =>
-                                    addAssessment(context, ref, query),
+                                onPressed: () => addAssessment(
+                                  context,
+                                  ref,
+                                  query,
+                                  onSaved: () => _recalculateGrades(
+                                    database,
+                                    query: query,
+                                  ),
+                                ),
                                 icon: const Icon(Icons.add, size: 18),
                                 label: const Text('Assessment'),
                               ),
                               OutlinedButton.icon(
-                                onPressed: () =>
-                                    addAttendance(context, ref, query),
+                                onPressed: () => addAttendance(
+                                  context,
+                                  ref,
+                                  query,
+                                  onSaved: () => _recalculateGrades(
+                                    database,
+                                    query: query,
+                                  ),
+                                ),
                                 icon: const Icon(
                                   Icons.event_available,
                                   size: 18,
@@ -275,8 +382,15 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                 label: const Text('Attendance Session'),
                               ),
                               OutlinedButton.icon(
-                                onPressed: () =>
-                                    addIndependent(context, ref, query),
+                                onPressed: () => addIndependent(
+                                  context,
+                                  ref,
+                                  query,
+                                  onSaved: () => _recalculateGrades(
+                                    database,
+                                    query: query,
+                                  ),
+                                ),
                                 icon: const Icon(
                                   Icons.auto_stories_outlined,
                                   size: 18,
@@ -284,14 +398,27 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                 label: const Text('Independent Learning'),
                               ),
                               OutlinedButton.icon(
-                                onPressed: () =>
-                                    configureWeights(context, ref, query),
+                                onPressed: () => configureWeights(
+                                  context,
+                                  ref,
+                                  query,
+                                  onSaved: () => _recalculateGrades(
+                                    database,
+                                    subjectId: query.subjectId,
+                                  ),
+                                ),
                                 icon: const Icon(Icons.tune, size: 18),
                                 label: const Text('Grading Weights'),
                               ),
                               OutlinedButton.icon(
-                                onPressed: () =>
-                                    configureAttendance(context, ref),
+                                onPressed: () => configureAttendance(
+                                  context,
+                                  ref,
+                                  onSaved: () => _recalculateGrades(
+                                    database,
+                                    allSubjects: true,
+                                  ),
+                                ),
                                 icon: const Icon(
                                   Icons.fact_check_outlined,
                                   size: 18,
@@ -317,11 +444,13 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                 const assessmentWidth = 128.0;
                                 const attendanceWidth = 92.0;
                                 const independentWidth = 138.0;
+                                const computedGradeWidth = 112.0;
                                 final minimumTableWidth =
                                     studentWidth +
                                     assessments.length * assessmentWidth +
                                     attendance.length * attendanceWidth +
-                                    independent.length * independentWidth;
+                                    independent.length * independentWidth +
+                                    computedGradeWidth;
                                 final tableWidth =
                                     constraints.maxWidth > minimumTableWidth
                                     ? constraints.maxWidth
@@ -378,34 +507,99 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                                 DataColumn(
                                                   label: SizedBox(
                                                     width: assessmentWidth,
-                                                    child: Padding(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            horizontal: 8,
+                                                    child: PopupMenuButton<_AssessmentHeaderAction>(
+                                                      tooltip:
+                                                          'Assessment options',
+                                                      onSelected: (action) {
+                                                        if (action ==
+                                                            _AssessmentHeaderAction
+                                                                .edit) {
+                                                          editAssessment(
+                                                            context,
+                                                            ref,
+                                                            query,
+                                                            assessment,
+                                                            onSaved: () =>
+                                                                _recalculateGrades(
+                                                                  database,
+                                                                  query: query,
+                                                                ),
+                                                          );
+                                                        } else {
+                                                          deleteAssessment(
+                                                            context,
+                                                            ref,
+                                                            query,
+                                                            assessment,
+                                                            onSaved: () =>
+                                                                _recalculateGrades(
+                                                                  database,
+                                                                  query: query,
+                                                                ),
+                                                          );
+                                                        }
+                                                      },
+                                                      itemBuilder: (context) => [
+                                                        const PopupMenuItem(
+                                                          value:
+                                                              _AssessmentHeaderAction
+                                                                  .edit,
+                                                          child: Text(
+                                                            'Edit assessment',
                                                           ),
-                                                      child: Column(
-                                                        mainAxisAlignment:
-                                                            MainAxisAlignment
-                                                                .center,
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .start,
-                                                        children: [
-                                                          Text(
-                                                            assessment.name,
-                                                            overflow:
-                                                                TextOverflow
-                                                                    .ellipsis,
+                                                        ),
+                                                        const PopupMenuItem(
+                                                          value:
+                                                              _AssessmentHeaderAction
+                                                                  .delete,
+                                                          child: Text(
+                                                            'Delete assessment',
                                                           ),
-                                                          Text(
-                                                            '${assessment.type} / ${assessment.totalPossibleScore}',
-                                                            style: const TextStyle(
-                                                              fontSize: 11,
+                                                        ),
+                                                      ],
+                                                      child: Padding(
+                                                        padding:
+                                                            const EdgeInsets.symmetric(
+                                                              horizontal: 8,
+                                                            ),
+                                                        child: Row(
+                                                          children: [
+                                                            Expanded(
+                                                              child: Column(
+                                                                mainAxisAlignment:
+                                                                    MainAxisAlignment
+                                                                        .center,
+                                                                crossAxisAlignment:
+                                                                    CrossAxisAlignment
+                                                                        .start,
+                                                                children: [
+                                                                  Text(
+                                                                    assessment
+                                                                        .name,
+                                                                    overflow:
+                                                                        TextOverflow
+                                                                            .ellipsis,
+                                                                  ),
+                                                                  Text(
+                                                                    '${assessment.type} / ${assessment.totalPossibleScore}',
+                                                                    style: const TextStyle(
+                                                                      fontSize:
+                                                                          11,
+                                                                      color: AppColors
+                                                                          .textSecondary,
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                            const Icon(
+                                                              Icons.more_vert,
+                                                              size: 18,
                                                               color: AppColors
                                                                   .textSecondary,
                                                             ),
-                                                          ),
-                                                        ],
+                                                          ],
+                                                        ),
                                                       ),
                                                     ),
                                                   ),
@@ -444,6 +638,18 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                                     ),
                                                   ),
                                                 ),
+                                              const DataColumn(
+                                                label: SizedBox(
+                                                  width: computedGradeWidth,
+                                                  child: Padding(
+                                                    padding:
+                                                        EdgeInsets.symmetric(
+                                                          horizontal: 8,
+                                                        ),
+                                                    child: Text('Grade'),
+                                                  ),
+                                                ),
+                                              ),
                                             ],
                                             rows: [
                                               for (final student in students)
@@ -492,17 +698,21 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                                                   )],
                                                               maximum: assessment
                                                                   .totalPossibleScore,
-                                                              onSave: (score) =>
-                                                                  database.saveAssessmentScore(
-                                                                    assessmentId:
-                                                                        assessment
-                                                                            .id,
-                                                                    studentId:
-                                                                        student
-                                                                            .id,
-                                                                    score:
-                                                                        score,
-                                                                  ),
+                                                              onSave: (score) async {
+                                                                await database.saveAssessmentScore(
+                                                                  assessmentId:
+                                                                      assessment
+                                                                          .id,
+                                                                  studentId:
+                                                                      student
+                                                                          .id,
+                                                                  score: score,
+                                                                );
+                                                                await _recalculateGrades(
+                                                                  database,
+                                                                  query: query,
+                                                                );
+                                                              },
                                                               onSaveError:
                                                                   _showSaveError,
                                                             ),
@@ -531,16 +741,21 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                                                     session.id,
                                                                     student.id,
                                                                   )],
-                                                              onSave: (code) =>
-                                                                  database.saveAttendanceCode(
-                                                                    attendanceSessionId:
-                                                                        session
-                                                                            .id,
-                                                                    studentId:
-                                                                        student
-                                                                            .id,
-                                                                    code: code,
-                                                                  ),
+                                                              onSave: (code) async {
+                                                                await database.saveAttendanceCode(
+                                                                  attendanceSessionId:
+                                                                      session
+                                                                          .id,
+                                                                  studentId:
+                                                                      student
+                                                                          .id,
+                                                                  code: code,
+                                                                );
+                                                                await _recalculateGrades(
+                                                                  database,
+                                                                  query: query,
+                                                                );
+                                                              },
                                                               onSaveError:
                                                                   _showSaveError,
                                                             ),
@@ -571,23 +786,63 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                                                   )],
                                                               maximum: record
                                                                   .totalPossibleScore,
-                                                              onSave: (score) =>
-                                                                  database.saveIndependentLearningScore(
-                                                                    recordId:
-                                                                        record
-                                                                            .id,
-                                                                    studentId:
-                                                                        student
-                                                                            .id,
-                                                                    score:
-                                                                        score,
-                                                                  ),
+                                                              onSave: (score) async {
+                                                                await database
+                                                                    .saveIndependentLearningScore(
+                                                                      recordId:
+                                                                          record
+                                                                              .id,
+                                                                      studentId:
+                                                                          student
+                                                                              .id,
+                                                                      score:
+                                                                          score,
+                                                                    );
+                                                                await _recalculateGrades(
+                                                                  database,
+                                                                  query: query,
+                                                                );
+                                                              },
                                                               onSaveError:
                                                                   _showSaveError,
                                                             ),
                                                           ),
                                                         ),
                                                       ),
+                                                    DataCell(
+                                                      SizedBox(
+                                                        width:
+                                                            computedGradeWidth,
+                                                        height: 40,
+                                                        child: Container(
+                                                          alignment:
+                                                              Alignment.center,
+                                                          color: AppColors
+                                                              .background,
+                                                          child: Text(
+                                                            switch (scores
+                                                                .termGrades[student
+                                                                .id]) {
+                                                              null =>
+                                                                'Not computed',
+                                                              final termGrade =>
+                                                                termGrade.grade
+                                                                        ?.toStringAsFixed(
+                                                                          2,
+                                                                        ) ??
+                                                                    'Incomplete',
+                                                            },
+                                                            style: const TextStyle(
+                                                              color: AppColors
+                                                                  .textSecondary,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w600,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
                                                   ],
                                                 ),
                                             ],
@@ -636,11 +891,13 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
   late final TextEditingController _controller;
   Future<void> _saveQueue = Future<void>.value();
   Timer? _debounceTimer;
+  Timer? _savedIndicatorTimer;
   double? _lastSaved;
   double? _latestScheduledValue;
   bool _isDirty = false;
   bool _hasInvalidInput = false;
   bool _saveFailed = false;
+  bool _justSaved = false;
   int _savingCount = 0;
 
   @override
@@ -666,6 +923,7 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
   @override
   void dispose() {
     _debounceTimer?.cancel();
+    _savedIndicatorTimer?.cancel();
     if (_isDirty && !_hasInvalidInput) {
       unawaited(_saveValue(_readValue(), updateUi: false));
     }
@@ -703,7 +961,9 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
           _readValue() !=
               (_savingCount > 0 ? _latestScheduledValue : _lastSaved);
       _saveFailed = false;
+      _justSaved = false;
     });
+    _savedIndicatorTimer?.cancel();
     if (!_hasInvalidInput && _isDirty) {
       _debounceTimer = Timer(
         const Duration(milliseconds: 450),
@@ -736,11 +996,21 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
       if (updateUi && mounted) {
         setState(() {
           _saveFailed = false;
+          _justSaved = true;
           _isDirty = !_hasInvalidInput && _readValue() != _lastSaved;
+        });
+        _savedIndicatorTimer?.cancel();
+        _savedIndicatorTimer = Timer(const Duration(seconds: 1), () {
+          if (mounted) setState(() => _justSaved = false);
         });
       }
     } catch (error) {
-      if (updateUi && mounted) setState(() => _saveFailed = true);
+      if (updateUi && mounted) {
+        setState(() {
+          _saveFailed = true;
+          _justSaved = false;
+        });
+      }
       widget.onSaveError(error);
     } finally {
       if (updateUi && mounted) setState(() => _savingCount--);
@@ -794,6 +1064,15 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
                   color: AppColors.red,
                 ),
               )
+            : _justSaved
+            ? const Tooltip(
+                message: 'Saved',
+                child: Icon(
+                  Icons.check_circle_outline,
+                  size: 16,
+                  color: AppColors.primary,
+                ),
+              )
             : null,
       ),
       onChanged: _handleChange,
@@ -824,6 +1103,8 @@ class _AttendanceCodeInput extends StatefulWidget {
 class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
   String? _value;
   bool _saving = false;
+  bool _justSaved = false;
+  Timer? _savedIndicatorTimer;
 
   @override
   void initState() {
@@ -839,17 +1120,36 @@ class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
     }
   }
 
+  @override
+  void dispose() {
+    _savedIndicatorTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _save(String? code) async {
     if (code == null || code == _value) return;
     final previousValue = _value;
     setState(() {
       _value = code;
       _saving = true;
+      _justSaved = false;
     });
+    _savedIndicatorTimer?.cancel();
     try {
       await widget.onSave(code);
+      if (mounted) {
+        setState(() => _justSaved = true);
+        _savedIndicatorTimer = Timer(const Duration(seconds: 1), () {
+          if (mounted) setState(() => _justSaved = false);
+        });
+      }
     } catch (error) {
-      if (mounted) setState(() => _value = previousValue);
+      if (mounted) {
+        setState(() {
+          _value = previousValue;
+          _justSaved = false;
+        });
+      }
       widget.onSaveError(error);
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -885,6 +1185,15 @@ class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
                 padding: EdgeInsets.all(8),
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
+            : _justSaved
+            ? const Tooltip(
+                message: 'Saved',
+                child: Icon(
+                  Icons.check_circle_outline,
+                  size: 16,
+                  color: AppColors.primary,
+                ),
+              )
             : null,
       ),
       items: const [
@@ -898,19 +1207,441 @@ class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
   }
 }
 
+enum _AssessmentHeaderAction { edit, delete }
+
+const _assessmentTypes = [
+  'Quiz',
+  'Assignment',
+  'Seatwork',
+  'Activity',
+  'Project',
+  'Major Exam',
+];
+
+String _formatAssessmentDate(DateTime date) =>
+    '${date.year.toString().padLeft(4, '0')}-'
+    '${date.month.toString().padLeft(2, '0')}-'
+    '${date.day.toString().padLeft(2, '0')}';
+
+Future<void> _pickAssessmentDate(
+  BuildContext context,
+  TextEditingController controller,
+) async {
+  final initialDate = DateTime.tryParse(controller.text) ?? DateTime.now();
+  final selectedDate = await showDatePicker(
+    context: context,
+    initialDate: initialDate,
+    firstDate: DateTime(1900),
+    lastDate: DateTime(2100),
+  );
+  if (selectedDate != null) {
+    controller.text = _formatAssessmentDate(selectedDate);
+  }
+}
+
+void _showGradeSheetMessage(
+  BuildContext context,
+  String message, {
+  bool isError = false,
+}) {
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(message),
+      backgroundColor: isError ? AppColors.red : null,
+    ),
+  );
+}
+
 Future<void> addAssessment(
   BuildContext context,
   WidgetRef ref,
-  GradeSheetQuery query,
-) async {
+  GradeSheetQuery query, {
+  required Future<void> Function() onSaved,
+}) async {
   final name = TextEditingController();
   final max = TextEditingController(text: '100');
+  final date = TextEditingController();
   var type = 'Quiz';
-  final saved = await showDialog<bool>(
+  try {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setState) => AlertDialog(
+          title: const Text('Add Assessment'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: name,
+                  decoration: const InputDecoration(labelText: 'Name'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: type,
+                  decoration: const InputDecoration(labelText: 'Type'),
+                  items: [
+                    for (final item in _assessmentTypes)
+                      DropdownMenuItem(value: item, child: Text(item)),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => type = value);
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: max,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'Total Possible Score',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: date,
+                  readOnly: true,
+                  onTap: () => _pickAssessmentDate(dialogContext, date),
+                  decoration: const InputDecoration(
+                    labelText: 'Assessment Date (optional)',
+                    suffixIcon: Icon(Icons.calendar_today_outlined),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved != true || !context.mounted) return;
+
+    final maximum = double.tryParse(max.text.trim());
+    if (name.text.trim().isEmpty ||
+        maximum == null ||
+        !maximum.isFinite ||
+        maximum <= 0) {
+      _showGradeSheetMessage(
+        context,
+        'Enter an assessment name and a total score greater than zero.',
+        isError: true,
+      );
+      return;
+    }
+
+    final database = await ref.read(appDatabaseProvider.future);
+    await database.createAssessment(
+      subjectId: query.subjectId,
+      gradingPeriodId: query.gradingPeriodId,
+      name: name.text.trim(),
+      type: type,
+      date: date.text.isEmpty ? null : date.text,
+      totalPossibleScore: maximum,
+    );
+    if (!context.mounted) return;
+    ref.invalidate(gradeSheetAssessmentsProvider(query));
+    await onSaved();
+    if (!context.mounted) return;
+    _showGradeSheetMessage(context, 'Assessment added.');
+  } catch (error) {
+    if (!context.mounted) return;
+    _showGradeSheetMessage(
+      context,
+      'Unable to add assessment: $error',
+      isError: true,
+    );
+  } finally {
+    name.dispose();
+    max.dispose();
+    date.dispose();
+  }
+}
+
+Future<void> editAssessment(
+  BuildContext context,
+  WidgetRef ref,
+  GradeSheetQuery query,
+  Assessment assessment, {
+  required Future<void> Function() onSaved,
+}) async {
+  final name = TextEditingController(text: assessment.name);
+  final max = TextEditingController(
+    text: assessment.totalPossibleScore.toString(),
+  );
+  final date = TextEditingController(text: assessment.date ?? '');
+  var type = assessment.type;
+  final types = {..._assessmentTypes, assessment.type}.toList();
+
+  try {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setState) => AlertDialog(
+          title: const Text('Edit Assessment'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: name,
+                  decoration: const InputDecoration(labelText: 'Name'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: type,
+                  decoration: const InputDecoration(labelText: 'Type'),
+                  items: [
+                    for (final item in types)
+                      DropdownMenuItem(value: item, child: Text(item)),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => type = value);
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: max,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'Total Possible Score',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: date,
+                  readOnly: true,
+                  onTap: () => _pickAssessmentDate(dialogContext, date),
+                  decoration: const InputDecoration(
+                    labelText: 'Assessment Date (optional)',
+                    suffixIcon: Icon(Icons.calendar_today_outlined),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Save Changes'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved != true || !context.mounted) return;
+
+    final maximum = double.tryParse(max.text.trim());
+    if (name.text.trim().isEmpty ||
+        maximum == null ||
+        !maximum.isFinite ||
+        maximum <= 0) {
+      _showGradeSheetMessage(
+        context,
+        'Enter an assessment name and a total score greater than zero.',
+        isError: true,
+      );
+      return;
+    }
+
+    final database = await ref.read(appDatabaseProvider.future);
+    final scores = await database.getAssessmentScores(assessment.id);
+    if (!context.mounted) return;
+    final overLimitCount = scores
+        .where((score) => score.score != null && score.score! > maximum)
+        .length;
+    if (overLimitCount > 0) {
+      _showGradeSheetMessage(
+        context,
+        'Correct the $overLimitCount student score(s) above $maximum before lowering the maximum.',
+        isError: true,
+      );
+      return;
+    }
+
+    final updated = await database.updateAssessment(
+      id: assessment.id,
+      name: name.text.trim(),
+      type: type,
+      date: date.text.isEmpty ? null : date.text,
+      totalPossibleScore: maximum,
+    );
+    if (!updated) {
+      throw StateError('The assessment no longer exists.');
+    }
+    if (!context.mounted) return;
+    ref.invalidate(gradeSheetAssessmentsProvider(query));
+    ref.invalidate(gradeSheetScoresProvider(query));
+    await onSaved();
+    if (!context.mounted) return;
+    _showGradeSheetMessage(context, 'Assessment updated.');
+  } catch (error) {
+    if (!context.mounted) return;
+    _showGradeSheetMessage(
+      context,
+      'Unable to update assessment: $error',
+      isError: true,
+    );
+  } finally {
+    name.dispose();
+    max.dispose();
+    date.dispose();
+  }
+}
+
+Future<void> deleteAssessment(
+  BuildContext context,
+  WidgetRef ref,
+  GradeSheetQuery query,
+  Assessment assessment, {
+  required Future<void> Function() onSaved,
+}) async {
+  final confirmed = await showDialog<bool>(
     context: context,
-    builder: (dialogContext) => StatefulBuilder(
-      builder: (dialogContext, setState) => AlertDialog(
-        title: const Text('Add Assessment'),
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Delete Assessment?'),
+      content: Text(
+        'Delete "${assessment.name}" and all student scores recorded for it?',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.red,
+            foregroundColor: AppColors.white,
+          ),
+          child: const Text('Delete'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+
+  try {
+    final database = await ref.read(appDatabaseProvider.future);
+    final deleted = await database.deleteAssessment(assessment.id);
+    if (deleted != 1) {
+      throw StateError('The assessment no longer exists.');
+    }
+    if (!context.mounted) return;
+    ref.invalidate(gradeSheetAssessmentsProvider(query));
+    ref.invalidate(gradeSheetScoresProvider(query));
+    await onSaved();
+    if (!context.mounted) return;
+    _showGradeSheetMessage(context, 'Assessment deleted.');
+  } catch (error) {
+    if (!context.mounted) return;
+    _showGradeSheetMessage(
+      context,
+      'Unable to delete assessment: $error',
+      isError: true,
+    );
+  }
+}
+
+Future<void> addAttendance(
+  BuildContext context,
+  WidgetRef ref,
+  GradeSheetQuery query, {
+  required Future<void> Function() onSaved,
+}) async {
+  final date = TextEditingController(
+    text: DateTime.now().toIso8601String().substring(0, 10),
+  );
+  try {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Add Attendance Session'),
+        content: TextField(
+          controller: date,
+          decoration: const InputDecoration(
+            labelText: 'Date',
+            hintText: 'YYYY-MM-DD',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    if (saved != true || !context.mounted) return;
+    final sessionDate = date.text.trim();
+    if (DateTime.tryParse(sessionDate) == null) {
+      _showGradeSheetMessage(
+        context,
+        'Enter a valid attendance date in YYYY-MM-DD format.',
+        isError: true,
+      );
+      return;
+    }
+
+    final database = await ref.read(appDatabaseProvider.future);
+    await database.createAttendanceSession(
+      subjectId: query.subjectId,
+      gradingPeriodId: query.gradingPeriodId,
+      sessionDate: sessionDate,
+    );
+    if (!context.mounted) return;
+    ref.invalidate(gradeSheetAttendanceProvider(query));
+    await onSaved();
+    if (!context.mounted) return;
+    _showGradeSheetMessage(context, 'Attendance session added.');
+  } catch (error) {
+    if (!context.mounted) return;
+    _showGradeSheetMessage(
+      context,
+      'Unable to add attendance session: $error',
+      isError: true,
+    );
+  } finally {
+    date.dispose();
+  }
+}
+
+Future<void> addIndependent(
+  BuildContext context,
+  WidgetRef ref,
+  GradeSheetQuery query, {
+  required Future<void> Function() onSaved,
+}) async {
+  final name = TextEditingController();
+  final description = TextEditingController();
+  final max = TextEditingController(text: '100');
+  try {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Add Independent Learning'),
         content: SizedBox(
           width: 460,
           child: Column(
@@ -918,29 +1649,13 @@ Future<void> addAssessment(
             children: [
               TextField(
                 controller: name,
-                decoration: const InputDecoration(labelText: 'Name'),
+                decoration: const InputDecoration(labelText: 'Activity Name'),
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: type,
-                decoration: const InputDecoration(labelText: 'Type'),
-                items: const [
-                  DropdownMenuItem(value: 'Quiz', child: Text('Quiz')),
-                  DropdownMenuItem(value: 'Seatwork', child: Text('Seatwork')),
-                  DropdownMenuItem(
-                    value: 'Assignment',
-                    child: Text('Assignment'),
-                  ),
-                  DropdownMenuItem(value: 'Activity', child: Text('Activity')),
-                  DropdownMenuItem(value: 'Project', child: Text('Project')),
-                  DropdownMenuItem(
-                    value: 'Major Exam',
-                    child: Text('Major Exam'),
-                  ),
-                ],
-                onChanged: (value) {
-                  if (value != null) setState(() => type = value);
-                },
+              TextField(
+                controller: description,
+                maxLines: 3,
+                decoration: const InputDecoration(labelText: 'Description'),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -966,145 +1681,54 @@ Future<void> addAssessment(
           ),
         ],
       ),
-    ),
-  );
-  if (saved == true &&
-      name.text.trim().isNotEmpty &&
-      (double.tryParse(max.text.trim()) ?? 0) > 0 &&
-      context.mounted) {
-    final database = await ref.read(appDatabaseProvider.future);
-    await database.createAssessment(
-      subjectId: query.subjectId,
-      gradingPeriodId: query.gradingPeriodId,
-      name: name.text.trim(),
-      type: type,
-      totalPossibleScore: double.parse(max.text.trim()),
     );
-    ref.invalidate(gradeSheetAssessmentsProvider(query));
-  }
-  name.dispose();
-  max.dispose();
-}
+    if (saved != true || !context.mounted) return;
+    final maximum = double.tryParse(max.text.trim());
+    if (name.text.trim().isEmpty ||
+        maximum == null ||
+        !maximum.isFinite ||
+        maximum <= 0) {
+      _showGradeSheetMessage(
+        context,
+        'Enter an activity name and a total score greater than zero.',
+        isError: true,
+      );
+      return;
+    }
 
-Future<void> addAttendance(
-  BuildContext context,
-  WidgetRef ref,
-  GradeSheetQuery query,
-) async {
-  final date = TextEditingController(
-    text: DateTime.now().toIso8601String().substring(0, 10),
-  );
-  final saved = await showDialog<bool>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('Add Attendance Session'),
-      content: TextField(
-        controller: date,
-        decoration: const InputDecoration(
-          labelText: 'Date',
-          hintText: 'YYYY-MM-DD',
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(dialogContext, false),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(dialogContext, true),
-          child: const Text('Add'),
-        ),
-      ],
-    ),
-  );
-  if (saved == true && date.text.trim().isNotEmpty && context.mounted) {
-    final database = await ref.read(appDatabaseProvider.future);
-    await database.createAttendanceSession(
-      subjectId: query.subjectId,
-      gradingPeriodId: query.gradingPeriodId,
-      sessionDate: date.text.trim(),
-    );
-    ref.invalidate(gradeSheetAttendanceProvider(query));
-  }
-  date.dispose();
-}
-
-Future<void> addIndependent(
-  BuildContext context,
-  WidgetRef ref,
-  GradeSheetQuery query,
-) async {
-  final name = TextEditingController();
-  final description = TextEditingController();
-  final max = TextEditingController(text: '100');
-  final saved = await showDialog<bool>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('Add Independent Learning'),
-      content: SizedBox(
-        width: 460,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: name,
-              decoration: const InputDecoration(labelText: 'Activity Name'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: description,
-              maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Description'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: max,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: const InputDecoration(
-                labelText: 'Total Possible Score',
-              ),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(dialogContext, false),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(dialogContext, true),
-          child: const Text('Add'),
-        ),
-      ],
-    ),
-  );
-  if (saved == true &&
-      name.text.trim().isNotEmpty &&
-      (double.tryParse(max.text.trim()) ?? 0) > 0 &&
-      context.mounted) {
     final database = await ref.read(appDatabaseProvider.future);
     await database.createIndependentLearningRecord(
       subjectId: query.subjectId,
       gradingPeriodId: query.gradingPeriodId,
       activityName: name.text.trim(),
       description: description.text.trim(),
-      totalPossibleScore: double.parse(max.text.trim()),
+      totalPossibleScore: maximum,
     );
+    if (!context.mounted) return;
     ref.invalidate(gradeSheetIndependentProvider(query));
+    await onSaved();
+    if (!context.mounted) return;
+    _showGradeSheetMessage(context, 'Independent learning activity added.');
+  } catch (error) {
+    if (!context.mounted) return;
+    _showGradeSheetMessage(
+      context,
+      'Unable to add independent learning activity: $error',
+      isError: true,
+    );
+  } finally {
+    name.dispose();
+    description.dispose();
+    max.dispose();
   }
-  name.dispose();
-  description.dispose();
-  max.dispose();
 }
 
 Future<void> configureWeights(
   BuildContext context,
   WidgetRef ref,
-  GradeSheetQuery query,
-) async {
+  GradeSheetQuery query, {
+  required Future<void> Function() onSaved,
+}) async {
   final database = await ref.read(appDatabaseProvider.future);
   final config = await database.getActiveGradingConfiguration(query.subjectId);
   if (!context.mounted) return;
@@ -1198,6 +1822,7 @@ Future<void> configureWeights(
         independentLearningWeight: weights.independentLearning,
         decimalPlaces: config?.decimalPlaces ?? 2,
       );
+      await onSaved();
       if (!context.mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -1217,7 +1842,11 @@ Future<void> configureWeights(
   independent.dispose();
 }
 
-Future<void> configureAttendance(BuildContext context, WidgetRef ref) async {
+Future<void> configureAttendance(
+  BuildContext context,
+  WidgetRef ref, {
+  required Future<void> Function() onSaved,
+}) async {
   final database = await ref.read(appDatabaseProvider.future);
   final values = AttendanceValues.decode(
     await database.getApplicationSetting('attendance_scoring'),
@@ -1283,6 +1912,7 @@ Future<void> configureAttendance(BuildContext context, WidgetRef ref) async {
       'attendance_scoring',
       updatedValues.encode(),
     );
+    await onSaved();
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Attendance scoring values saved.')),
@@ -1314,6 +1944,7 @@ Future<void> computeGrades(
       gradingPeriodId: query.gradingPeriodId,
     );
     if (!context.mounted) return;
+    ref.invalidate(gradeSheetScoresProvider(query));
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(

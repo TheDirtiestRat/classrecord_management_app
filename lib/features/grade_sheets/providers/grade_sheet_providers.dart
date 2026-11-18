@@ -66,9 +66,14 @@ final gradeSheetScoresProvider = FutureProvider.autoDispose
           .getIndependentLearningScoresForRecords(
             independent.map((record) => record.id),
           );
+      final termGradesFuture = database.getTermGrades(
+        subjectId: query.subjectId,
+        gradingPeriodId: query.gradingPeriodId,
+      );
       final assessmentScores = await assessmentScoresFuture;
       final attendanceScores = await attendanceScoresFuture;
       final independentScores = await independentScoresFuture;
+      final termGrades = await termGradesFuture;
 
       return GradeSheetScores(
         assessmentScores: {
@@ -83,6 +88,7 @@ final gradeSheetScoresProvider = FutureProvider.autoDispose
           for (final score in independentScores)
             (score.recordId, score.studentId): score.score,
         },
+        termGrades: {for (final grade in termGrades) grade.studentId: grade},
       );
     });
 
@@ -91,11 +97,13 @@ class GradeSheetScores {
     required this.assessmentScores,
     required this.attendanceCodes,
     required this.independentLearningScores,
+    required this.termGrades,
   });
 
   final Map<(int, int), double?> assessmentScores;
   final Map<(int, int), String> attendanceCodes;
   final Map<(int, int), double?> independentLearningScores;
+  final Map<int, TermGrade> termGrades;
 }
 
 class GradeSheetQuery {

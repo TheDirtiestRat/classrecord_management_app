@@ -114,6 +114,43 @@ void main() {
         gradingPeriodId: periodId,
       );
       expect(rankings.map((ranking) => ranking.rank), [1, 1]);
+      final rankingPage = await database.getRankingsPage(
+        subjectId: subjectId,
+        gradingPeriodId: periodId,
+        limit: 1,
+        offset: 1,
+      );
+      expect(rankingPage.totalRecords, 2);
+      expect(rankingPage.records, hasLength(1));
+      expect(rankingPage.records.single.$1.rank, 1);
+      expect(rankingPage.records.single.$2.id, studentIds[1]);
+
+      final gradeTimestamps = {
+        for (final grade in grades) grade.studentId: grade.calculatedAt,
+      };
+      final rankingTimestamps = {
+        for (final ranking in rankings) ranking.studentId: ranking.calculatedAt,
+      };
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await service.computeAndSave(
+        database: database,
+        subjectId: subjectId,
+        gradingPeriodId: periodId,
+      );
+      grades = await database.getTermGrades(
+        subjectId: subjectId,
+        gradingPeriodId: periodId,
+      );
+      rankings = await database.getRankings(
+        subjectId: subjectId,
+        gradingPeriodId: periodId,
+      );
+      expect({
+        for (final grade in grades) grade.studentId: grade.calculatedAt,
+      }, gradeTimestamps);
+      expect({
+        for (final ranking in rankings) ranking.studentId: ranking.calculatedAt,
+      }, rankingTimestamps);
 
       await database.saveAssessmentScore(
         assessmentId: quizId,
@@ -178,6 +215,61 @@ void main() {
 
     expect(result.completedGrades, 1);
     expect(attendanceGrade, 70);
+  });
+
+  test('assessment maximum changes recalculate saved term grades', () async {
+    final quizId = await database.createAssessment(
+      subjectId: subjectId,
+      gradingPeriodId: periodId,
+      name: 'Quiz 1',
+      type: 'Quiz',
+      totalPossibleScore: 10,
+    );
+    final workId = await database.createAssessment(
+      subjectId: subjectId,
+      gradingPeriodId: periodId,
+      name: 'Seatwork 1',
+      type: 'Seatwork',
+      totalPossibleScore: 10,
+    );
+    await database.saveAssessmentScore(
+      assessmentId: quizId,
+      studentId: studentIds.first,
+      score: 5,
+    );
+    await database.saveAssessmentScore(
+      assessmentId: workId,
+      studentId: studentIds.first,
+      score: 10,
+    );
+    const service = TermGradeCalculationService();
+    await service.computeAndSave(
+      database: database,
+      subjectId: subjectId,
+      gradingPeriodId: periodId,
+    );
+
+    final updated = await database.updateAssessment(
+      id: quizId,
+      name: 'Quiz 1',
+      type: 'Quiz',
+      totalPossibleScore: 20,
+    );
+    expect(updated, isTrue);
+    await service.computeAndSave(
+      database: database,
+      subjectId: subjectId,
+      gradingPeriodId: periodId,
+    );
+
+    final grades = await database.getTermGrades(
+      subjectId: subjectId,
+      gradingPeriodId: periodId,
+    );
+    expect(
+      grades.singleWhere((grade) => grade.studentId == studentIds.first).grade,
+      62.5,
+    );
   });
 
   test(
