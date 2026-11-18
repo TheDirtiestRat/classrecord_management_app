@@ -21,14 +21,17 @@ class StudentsPage extends ConsumerStatefulWidget {
 
 class _StudentsPageState extends ConsumerState<StudentsPage> {
   final _searchController = TextEditingController();
+  final _tableScrollController = ScrollController();
   String _search = '';
   String _courseFilter = 'All';
   String _statusFilter = 'All';
   int? _yearFilter;
+  final Set<int> _selectedStudentIds = {};
 
   @override
   void dispose() {
     _searchController.dispose();
+    _tableScrollController.dispose();
     super.dispose();
   }
 
@@ -112,6 +115,32 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
                     padding: const EdgeInsets.all(18),
                     child: Column(
                       children: [
+                        if (_selectedStudentIds.isNotEmpty) ...[
+                          Row(
+                            children: [
+                              Text(
+                                '${_selectedStudentIds.length} students selected',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const Spacer(),
+                              TextButton(
+                                onPressed: () =>
+                                    setState(_selectedStudentIds.clear),
+                                child: const Text('Clear selection'),
+                              ),
+                              const SizedBox(width: 8),
+                              ElevatedButton.icon(
+                                onPressed: () =>
+                                    _openBatchUpdateDialog(context),
+                                icon: const Icon(Icons.edit_outlined),
+                                label: const Text('Batch Update'),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                        ],
                         Row(
                           children: [
                             Expanded(
@@ -130,6 +159,7 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
                               width: 180,
                               child: DropdownButtonFormField<String>(
                                 initialValue: _courseFilter,
+                                isExpanded: true,
                                 decoration: const InputDecoration(
                                   labelText: 'Course',
                                 ),
@@ -151,6 +181,7 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
                               width: 140,
                               child: DropdownButtonFormField<String>(
                                 initialValue: _statusFilter,
+                                isExpanded: true,
                                 decoration: const InputDecoration(
                                   labelText: 'Status',
                                 ),
@@ -178,6 +209,7 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
                               width: 150,
                               child: DropdownButtonFormField<int?>(
                                 initialValue: _yearFilter,
+                                isExpanded: true,
                                 decoration: const InputDecoration(
                                   labelText: 'Year',
                                 ),
@@ -220,116 +252,158 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
                                     ),
                                   ),
                                 )
-                              : SingleChildScrollView(
-                                  scrollDirection: Axis.horizontal,
+                              : Scrollbar(
+                                  controller: _tableScrollController,
+                                  thumbVisibility: true,
                                   child: SingleChildScrollView(
-                                    child: DataTable(
-                                      headingRowHeight: 44,
-                                      dataRowMinHeight: 48,
-                                      dataRowMaxHeight: 48,
-                                      columns: const [
-                                        DataColumn(
-                                          label: Text('Student Number'),
-                                        ),
-                                        DataColumn(label: Text('Student Name')),
-                                        DataColumn(label: Text('Course')),
-                                        DataColumn(label: Text('Year')),
-                                        DataColumn(label: Text('Status')),
-                                        DataColumn(label: Text('Actions')),
-                                      ],
-                                      rows: visible.map((student) {
-                                        final name =
-                                            [
-                                                  student.firstName,
-                                                  student.middleName,
-                                                  student.lastName,
-                                                  student.suffix,
-                                                ]
-                                                .where(
-                                                  (part) => part.isNotEmpty,
-                                                )
-                                                .join(' ');
-                                        return DataRow(
-                                          cells: [
-                                            DataCell(
-                                              Text(
-                                                student.studentNumber,
-                                                style: const TextStyle(
-                                                  fontWeight: FontWeight.w700,
+                                    controller: _tableScrollController,
+                                    scrollDirection: Axis.horizontal,
+                                    child: SingleChildScrollView(
+                                      child: DataTable(
+                                        headingRowHeight: 44,
+                                        dataRowMinHeight: 48,
+                                        dataRowMaxHeight: 48,
+                                        onSelectAll: (selected) {
+                                          setState(() {
+                                            if (selected == true) {
+                                              _selectedStudentIds.addAll(
+                                                visible.map(
+                                                  (student) => student.id,
+                                                ),
+                                              );
+                                            } else {
+                                              _selectedStudentIds.removeAll(
+                                                visible.map(
+                                                  (student) => student.id,
+                                                ),
+                                              );
+                                            }
+                                          });
+                                        },
+                                        columns: const [
+                                          DataColumn(
+                                            label: Text('Student Number'),
+                                          ),
+                                          DataColumn(
+                                            label: Text('Student Name'),
+                                          ),
+                                          DataColumn(label: Text('Course')),
+                                          DataColumn(label: Text('Year')),
+                                          DataColumn(label: Text('Status')),
+                                          DataColumn(label: Text('Actions')),
+                                        ],
+                                        rows: visible.map((student) {
+                                          final name =
+                                              [
+                                                    student.firstName,
+                                                    student.middleName,
+                                                    student.lastName,
+                                                    student.suffix,
+                                                  ]
+                                                  .where(
+                                                    (part) => part.isNotEmpty,
+                                                  )
+                                                  .join(' ');
+                                          return DataRow(
+                                            selected: _selectedStudentIds
+                                                .contains(student.id),
+                                            onSelectChanged: (selected) {
+                                              setState(() {
+                                                if (selected == true) {
+                                                  _selectedStudentIds.add(
+                                                    student.id,
+                                                  );
+                                                } else {
+                                                  _selectedStudentIds.remove(
+                                                    student.id,
+                                                  );
+                                                }
+                                              });
+                                            },
+                                            cells: [
+                                              DataCell(
+                                                Text(
+                                                  student.studentNumber,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
                                                 ),
                                               ),
-                                            ),
-                                            DataCell(
-                                              SizedBox(
-                                                width: 220,
-                                                child: Text(name),
+                                              DataCell(
+                                                SizedBox(
+                                                  width: 220,
+                                                  child: Text(name),
+                                                ),
                                               ),
-                                            ),
-                                            DataCell(Text(student.course)),
-                                            DataCell(
-                                              Text(
-                                                student.yearLevel?.toString() ??
-                                                    '-',
+                                              DataCell(Text(student.course)),
+                                              DataCell(
+                                                Text(
+                                                  student.yearLevel
+                                                          ?.toString() ??
+                                                      '-',
+                                                ),
                                               ),
-                                            ),
-                                            DataCell(
-                                              Chip(
-                                                label: Text(student.status),
-                                                backgroundColor:
-                                                    student.status == 'Active'
-                                                    ? AppColors.primaryLight
-                                                    : AppColors.background,
+                                              DataCell(
+                                                Chip(
+                                                  label: Text(student.status),
+                                                  backgroundColor:
+                                                      student.status == 'Active'
+                                                      ? AppColors.primaryLight
+                                                      : AppColors.background,
+                                                ),
                                               ),
-                                            ),
-                                            DataCell(
-                                              Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  IconButton(
-                                                    tooltip: 'Assign subjects',
-                                                    onPressed: () =>
-                                                        _openEnrollmentDialog(
-                                                          context,
-                                                          student,
-                                                          subjectsAsync,
-                                                        ),
-                                                    icon: const Icon(
-                                                      Icons
-                                                          .assignment_ind_outlined,
+                                              DataCell(
+                                                Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    IconButton(
+                                                      tooltip:
+                                                          'Assign subjects',
+                                                      onPressed: () =>
+                                                          _openEnrollmentDialog(
+                                                            context,
+                                                            student,
+                                                            subjectsAsync,
+                                                          ),
+                                                      icon: const Icon(
+                                                        Icons
+                                                            .assignment_ind_outlined,
+                                                      ),
                                                     ),
-                                                  ),
-                                                  IconButton(
-                                                    tooltip: 'Edit',
-                                                    onPressed: () =>
-                                                        _openStudentDialog(
-                                                          context,
-                                                          ref,
-                                                          student: student,
-                                                          sectionsAsync:
-                                                              sectionsAsync,
-                                                        ),
-                                                    icon: const Icon(
-                                                      Icons.edit_outlined,
+                                                    IconButton(
+                                                      tooltip: 'Edit',
+                                                      onPressed: () =>
+                                                          _openStudentDialog(
+                                                            context,
+                                                            ref,
+                                                            student: student,
+                                                            sectionsAsync:
+                                                                sectionsAsync,
+                                                          ),
+                                                      icon: const Icon(
+                                                        Icons.edit_outlined,
+                                                      ),
                                                     ),
-                                                  ),
-                                                  IconButton(
-                                                    tooltip: 'Delete',
-                                                    onPressed: () =>
-                                                        _deleteStudent(
-                                                          context,
-                                                          student,
-                                                        ),
-                                                    icon: const Icon(
-                                                      Icons.delete_outline,
-                                                      color: AppColors.red,
+                                                    IconButton(
+                                                      tooltip: 'Delete',
+                                                      onPressed: () =>
+                                                          _deleteStudent(
+                                                            context,
+                                                            student,
+                                                          ),
+                                                      icon: const Icon(
+                                                        Icons.delete_outline,
+                                                        color: AppColors.red,
+                                                      ),
                                                     ),
-                                                  ),
-                                                ],
+                                                  ],
+                                                ),
                                               ),
-                                            ),
-                                          ],
-                                        );
-                                      }).toList(),
+                                            ],
+                                          );
+                                        }).toList(),
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -343,6 +417,278 @@ class _StudentsPageState extends ConsumerState<StudentsPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _openBatchUpdateDialog(BuildContext context) async {
+    var updateCourse = false;
+    var course = '';
+    var updateYearLevel = false;
+    var updateSection = false;
+    var updateStatus = false;
+    var addSubjects = false;
+    int? yearLevel;
+    int? sectionId;
+    var status = 'Active';
+    String? courseError;
+    final selectedSubjectIds = <int>{};
+
+    bool hasChanges() =>
+        updateCourse ||
+        updateYearLevel ||
+        updateSection ||
+        updateStatus ||
+        (addSubjects && selectedSubjectIds.isNotEmpty);
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          final screenSize = MediaQuery.sizeOf(dialogContext);
+          return AlertDialog(
+            title: Text('Update ${_selectedStudentIds.length} Students'),
+            content: SizedBox(
+              width: screenSize.width > 684 ? 620 : screenSize.width - 64,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: screenSize.height * 0.72,
+                ),
+                child: SingleChildScrollView(
+                  child: Consumer(
+                    builder: (context, dialogRef, _) {
+                      final sectionsAsync = dialogRef.watch(sectionsProvider);
+                      final subjectsAsync = dialogRef.watch(subjectsProvider);
+                      return Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: updateCourse,
+                            title: const Text('Update course'),
+                            onChanged: (value) => setDialogState(() {
+                              updateCourse = value ?? false;
+                              courseError = null;
+                            }),
+                          ),
+                          TextField(
+                            enabled: updateCourse,
+                            onChanged: (value) {
+                              course = value;
+                              if (courseError != null) {
+                                setDialogState(() => courseError = null);
+                              }
+                            },
+                            decoration: InputDecoration(
+                              labelText: 'Course',
+                              errorText: courseError,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: updateYearLevel,
+                            title: const Text('Update year level'),
+                            onChanged: (value) => setDialogState(
+                              () => updateYearLevel = value ?? false,
+                            ),
+                          ),
+                          DropdownButtonFormField<int?>(
+                            initialValue: yearLevel,
+                            decoration: const InputDecoration(
+                              labelText: 'Year level',
+                            ),
+                            items: [
+                              const DropdownMenuItem<int?>(
+                                value: null,
+                                child: Text('Unspecified'),
+                              ),
+                              ...[1, 2, 3, 4].map(
+                                (year) => DropdownMenuItem<int?>(
+                                  value: year,
+                                  child: Text('Year $year'),
+                                ),
+                              ),
+                            ],
+                            onChanged: updateYearLevel
+                                ? (value) =>
+                                      setDialogState(() => yearLevel = value)
+                                : null,
+                          ),
+                          const SizedBox(height: 8),
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: updateSection,
+                            title: const Text('Update section'),
+                            onChanged: (value) => setDialogState(
+                              () => updateSection = value ?? false,
+                            ),
+                          ),
+                          sectionsAsync.when(
+                            loading: () => const LinearProgressIndicator(),
+                            error: (error, stack) =>
+                                Text('Unable to load sections: $error'),
+                            data: (sections) => DropdownButtonFormField<int?>(
+                              initialValue: sectionId,
+                              decoration: const InputDecoration(
+                                labelText: 'Section',
+                              ),
+                              items: [
+                                const DropdownMenuItem<int?>(
+                                  value: null,
+                                  child: Text('No section (clear assignment)'),
+                                ),
+                                ...sections.map(
+                                  (section) => DropdownMenuItem<int?>(
+                                    value: section.id,
+                                    child: Text(section.name),
+                                  ),
+                                ),
+                              ],
+                              onChanged: updateSection
+                                  ? (value) =>
+                                        setDialogState(() => sectionId = value)
+                                  : null,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: updateStatus,
+                            title: const Text('Update status'),
+                            onChanged: (value) => setDialogState(
+                              () => updateStatus = value ?? false,
+                            ),
+                          ),
+                          DropdownButtonFormField<String>(
+                            initialValue: status,
+                            decoration: const InputDecoration(
+                              labelText: 'Status',
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'Active',
+                                child: Text('Active'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'Inactive',
+                                child: Text('Inactive'),
+                              ),
+                            ],
+                            onChanged: updateStatus
+                                ? (value) {
+                                    if (value != null) {
+                                      setDialogState(() => status = value);
+                                    }
+                                  }
+                                : null,
+                          ),
+                          const SizedBox(height: 8),
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: addSubjects,
+                            title: const Text('Add subjects'),
+                            subtitle: const Text(
+                              'Existing subject enrollments will be kept.',
+                            ),
+                            onChanged: (value) => setDialogState(
+                              () => addSubjects = value ?? false,
+                            ),
+                          ),
+                          subjectsAsync.when(
+                            loading: () => const LinearProgressIndicator(),
+                            error: (error, stack) =>
+                                Text('Unable to load subjects: $error'),
+                            data: (subjects) => subjects.isEmpty
+                                ? const Text('No subjects available.')
+                                : Column(
+                                    children: subjects
+                                        .map(
+                                          (subject) => CheckboxListTile(
+                                            contentPadding: EdgeInsets.zero,
+                                            dense: true,
+                                            value: selectedSubjectIds.contains(
+                                              subject.id,
+                                            ),
+                                            title: Text(subject.name),
+                                            subtitle: Text(subject.code),
+                                            onChanged: addSubjects
+                                                ? (selected) => setDialogState(
+                                                    () {
+                                                      if (selected == true) {
+                                                        selectedSubjectIds.add(
+                                                          subject.id,
+                                                        );
+                                                      } else {
+                                                        selectedSubjectIds
+                                                            .remove(subject.id);
+                                                      }
+                                                    },
+                                                  )
+                                                : null,
+                                          ),
+                                        )
+                                        .toList(),
+                                  ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: hasChanges()
+                    ? () {
+                        if (updateCourse && course.trim().isEmpty) {
+                          setDialogState(
+                            () => courseError = 'Enter a course name.',
+                          );
+                          return;
+                        }
+                        Navigator.pop(dialogContext, true);
+                      }
+                    : null,
+                child: const Text('Apply'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (saved != true) {
+      return;
+    }
+
+    final selectedStudentCount = _selectedStudentIds.length;
+    final courseValue = course.trim();
+    final subjectIdsToAdd = addSubjects
+        ? selectedSubjectIds.toList()
+        : const <int>[];
+    await applyStudentBatchUpdate(
+      ref,
+      studentIds: _selectedStudentIds.toList(),
+      updateCourse: updateCourse,
+      course: courseValue,
+      updateYearLevel: updateYearLevel,
+      yearLevel: yearLevel,
+      updateSection: updateSection,
+      sectionId: sectionId,
+      updateStatus: updateStatus,
+      status: status,
+      subjectIdsToAdd: subjectIdsToAdd,
+    );
+    if (!context.mounted) {
+      return;
+    }
+    setState(_selectedStudentIds.clear);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Updated $selectedStudentCount students.')),
     );
   }
 

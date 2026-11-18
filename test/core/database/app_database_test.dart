@@ -133,6 +133,93 @@ void main() {
     expect(enrolled.single.id, studentId);
   });
 
+  test('batch-updates selected students and adds subjects', () async {
+    final yearId = await database.createAcademicYear('2026-2027');
+    final semesterId = await database.createSemester(
+      academicYearId: yearId,
+      name: 'First Semester',
+    );
+    final firstSectionId = await database.createSection(name: 'BSIT-1A');
+    final nextSectionId = await database.createSection(name: 'BSIT-2A');
+    final firstStudentId = await database.createStudent(
+      studentNumber: '2026-300',
+      firstName: 'Ana',
+      lastName: 'Reyes',
+      course: 'BSIT',
+      yearLevel: 1,
+      sectionId: firstSectionId,
+    );
+    final secondStudentId = await database.createStudent(
+      studentNumber: '2026-301',
+      firstName: 'Ben',
+      lastName: 'Santos',
+      course: 'BSIT',
+      yearLevel: 1,
+      sectionId: firstSectionId,
+    );
+    final unselectedStudentId = await database.createStudent(
+      studentNumber: '2026-302',
+      firstName: 'Cara',
+      lastName: 'Diaz',
+      course: 'BSIT',
+      yearLevel: 1,
+      sectionId: firstSectionId,
+    );
+    final existingSubjectId = await database.createSubject(
+      code: 'IT101',
+      name: 'Existing Subject',
+      academicYearId: yearId,
+      semesterId: semesterId,
+    );
+    final addedSubjectId = await database.createSubject(
+      code: 'IT102',
+      name: 'Added Subject',
+      academicYearId: yearId,
+      semesterId: semesterId,
+    );
+    await database.enrollStudent(
+      subjectId: existingSubjectId,
+      studentId: firstStudentId,
+    );
+
+    final updatedCount = await database.updateStudentsBatch(
+      studentIds: [firstStudentId, secondStudentId, firstStudentId],
+      updateCourse: true,
+      course: 'BSCS',
+      updateYearLevel: true,
+      yearLevel: 2,
+      updateSection: true,
+      sectionId: nextSectionId,
+      updateStatus: true,
+      status: 'Inactive',
+      subjectIdsToAdd: [addedSubjectId],
+    );
+
+    final students = {
+      for (final student in await database.getAllStudents())
+        student.id: student,
+    };
+    final addedEnrollments = await database.getEnrolledStudents(addedSubjectId);
+    final existingEnrollments = await database.getEnrolledStudents(
+      existingSubjectId,
+    );
+    expect(updatedCount, 2);
+    for (final studentId in [firstStudentId, secondStudentId]) {
+      expect(students[studentId]?.course, 'BSCS');
+      expect(students[studentId]?.yearLevel, 2);
+      expect(students[studentId]?.sectionId, nextSectionId);
+      expect(students[studentId]?.status, 'Inactive');
+    }
+    expect(students[unselectedStudentId]?.course, 'BSIT');
+    expect(addedEnrollments.map((student) => student.id).toSet(), {
+      firstStudentId,
+      secondStudentId,
+    });
+    expect(existingEnrollments.map((student) => student.id).toList(), [
+      firstStudentId,
+    ]);
+  });
+
   test('CSV import helper does not duplicate student numbers', () async {
     await database.findOrCreateStudentFromCsv(
       studentNumber: '2026-100',
@@ -186,6 +273,12 @@ void main() {
       );
       final missing = await database.getAssessmentScores(assessmentId);
       expect(missing.single.score, isNull);
+      expect(
+        (await database.getAssessmentScoresForAssessments([assessmentId]))
+            .single
+            .score,
+        isNull,
+      );
 
       await database.saveAssessmentScore(
         assessmentId: assessmentId,
@@ -194,6 +287,12 @@ void main() {
       );
       final zero = await database.getAssessmentScores(assessmentId);
       expect(zero.single.score, 0);
+      expect(
+        (await database.getAssessmentScoresForAssessments([assessmentId]))
+            .single
+            .score,
+        0,
+      );
     },
   );
 
@@ -226,10 +325,59 @@ void main() {
       studentId: studentId,
       code: 'P',
     );
+    await database.saveAttendanceCode(
+      attendanceSessionId: sessionId,
+      studentId: studentId,
+      code: 'A',
+    );
 
     final records = await database.getStudentAttendance(sessionId);
     expect(records, hasLength(1));
-    expect(records.single.code, 'P');
+    expect(records.single.code, 'A');
+    expect(
+      (await database.getStudentAttendanceForSessions([sessionId])).single.code,
+      'A',
+    );
+  });
+
+  test('loads independent learning scores in batches by record ID', () async {
+    final yearId = await database.createAcademicYear('2026-2027');
+    final semesterId = await database.createSemester(
+      academicYearId: yearId,
+      name: 'First Semester',
+    );
+    final subjectId = await database.createSubject(
+      code: 'IT101',
+      name: 'Introduction to Computing',
+      academicYearId: yearId,
+      semesterId: semesterId,
+    );
+    final studentId = await database.createStudent(
+      studentNumber: '2026-202',
+      firstName: 'Mia',
+      lastName: 'Reyes',
+    );
+    final period = (await database.getGradingPeriods()).first;
+    final recordId = await database.createIndependentLearningRecord(
+      subjectId: subjectId,
+      gradingPeriodId: period.id,
+      activityName: 'Reading',
+      totalPossibleScore: 10,
+    );
+
+    await database.saveIndependentLearningScore(
+      recordId: recordId,
+      studentId: studentId,
+      score: 8,
+    );
+
+    final scores = await database.getIndependentLearningScoresForRecords([
+      recordId,
+    ]);
+    expect(scores, hasLength(1));
+    expect(scores.single.studentId, studentId);
+    expect(scores.single.score, 8);
+    expect(await database.getIndependentLearningScoresForRecords([]), isEmpty);
   });
 
   test('persists grading settings, term grades, and rankings', () async {

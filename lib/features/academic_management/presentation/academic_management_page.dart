@@ -267,78 +267,93 @@ class _AcademicManagementPageState
                     ),
                   )
                 else
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        flex: 2,
-                        child: DataTable(
-                          headingRowHeight: 38,
-                          dataRowMinHeight: 42,
-                          dataRowMaxHeight: 42,
-                          columns: const [
-                            DataColumn(label: Text('Academic Year')),
-                            DataColumn(label: Text('Status')),
-                            DataColumn(label: Text('Actions')),
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final yearTable = _academicYearsTable(years);
+                      final semesterPanel = _semesterPanel();
+                      if (constraints.maxWidth < 1000) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            yearTable,
+                            const SizedBox(height: 16),
+                            semesterPanel,
                           ],
-                          rows: years
-                              .map(
-                                (year) => DataRow(
-                                  selected: year.id == _selectedYearId,
-                                  onSelectChanged: (_) =>
-                                      setState(() => _selectedYearId = year.id),
-                                  cells: [
-                                    DataCell(Text(year.name)),
-                                    DataCell(
-                                      Text(
-                                        year.isActive ? 'Active' : 'Inactive',
-                                        style: TextStyle(
-                                          color: year.isActive
-                                              ? AppColors.primaryDark
-                                              : AppColors.textSecondary,
-                                        ),
-                                      ),
-                                    ),
-                                    DataCell(
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          IconButton(
-                                            tooltip: 'Edit',
-                                            onPressed: () =>
-                                                _editAcademicYear(year),
-                                            icon: const Icon(
-                                              Icons.edit_outlined,
-                                              size: 18,
-                                            ),
-                                          ),
-                                          IconButton(
-                                            tooltip: 'Delete',
-                                            onPressed: () =>
-                                                _deleteAcademicYear(year),
-                                            icon: const Icon(
-                                              Icons.delete_outline,
-                                              size: 18,
-                                              color: AppColors.red,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              )
-                              .toList(),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(flex: 3, child: _semesterPanel()),
-                    ],
+                        );
+                      }
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(flex: 2, child: yearTable),
+                          const SizedBox(width: 16),
+                          Expanded(flex: 3, child: semesterPanel),
+                        ],
+                      );
+                    },
                   ),
               ],
             );
           },
         ),
+      ),
+    );
+  }
+
+  Widget _academicYearsTable(List<AcademicYear> years) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: DataTable(
+        headingRowHeight: 38,
+        dataRowMinHeight: 42,
+        dataRowMaxHeight: 42,
+        columns: const [
+          DataColumn(label: Text('Academic Year')),
+          DataColumn(label: Text('Status')),
+          DataColumn(label: Text('Actions')),
+        ],
+        rows: years
+            .map(
+              (year) => DataRow(
+                selected: year.id == _selectedYearId,
+                onSelectChanged: (_) =>
+                    setState(() => _selectedYearId = year.id),
+                cells: [
+                  DataCell(Text(year.name)),
+                  DataCell(
+                    Text(
+                      year.isActive ? 'Active' : 'Inactive',
+                      style: TextStyle(
+                        color: year.isActive
+                            ? AppColors.primaryDark
+                            : AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                  DataCell(
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Edit',
+                          onPressed: () => _editAcademicYear(year),
+                          icon: const Icon(Icons.edit_outlined, size: 18),
+                        ),
+                        IconButton(
+                          tooltip: 'Delete',
+                          onPressed: () => _deleteAcademicYear(year),
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            size: 18,
+                            color: AppColors.red,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            )
+            .toList(),
       ),
     );
   }

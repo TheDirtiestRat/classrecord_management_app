@@ -434,6 +434,60 @@ class AppDatabase extends _$AppDatabase {
     return count == 1;
   }
 
+  Future<int> updateStudentsBatch({
+    required List<int> studentIds,
+    bool updateCourse = false,
+    String course = '',
+    bool updateYearLevel = false,
+    int? yearLevel,
+    bool updateSection = false,
+    int? sectionId,
+    bool updateStatus = false,
+    String status = 'Active',
+    List<int> subjectIdsToAdd = const [],
+  }) async {
+    final uniqueStudentIds = studentIds.toSet().toList();
+    final uniqueSubjectIds = subjectIdsToAdd.toSet().toList();
+    if (uniqueStudentIds.isEmpty) {
+      return 0;
+    }
+
+    final updateStudentFields =
+        updateCourse || updateYearLevel || updateSection || updateStatus;
+    if (!updateStudentFields && uniqueSubjectIds.isEmpty) {
+      return 0;
+    }
+
+    return transaction(() async {
+      var updatedCount = uniqueStudentIds.length;
+      if (updateStudentFields) {
+        updatedCount =
+            await (update(
+              students,
+            )..where((row) => row.id.isIn(uniqueStudentIds))).write(
+              StudentsCompanion(
+                course: updateCourse ? Value(course) : const Value.absent(),
+                yearLevel: updateYearLevel
+                    ? Value(yearLevel)
+                    : const Value.absent(),
+                sectionId: updateSection
+                    ? Value(sectionId)
+                    : const Value.absent(),
+                status: updateStatus ? Value(status) : const Value.absent(),
+                updatedAt: Value(DateTime.now().toIso8601String()),
+              ),
+            );
+      }
+
+      for (final studentId in uniqueStudentIds) {
+        for (final subjectId in uniqueSubjectIds) {
+          await enrollStudent(subjectId: subjectId, studentId: studentId);
+        }
+      }
+      return updatedCount;
+    });
+  }
+
   Future<int> deleteStudent(int id) =>
       (delete(students)..where((row) => row.id.equals(id))).go();
 
@@ -583,6 +637,16 @@ class AppDatabase extends _$AppDatabase {
         studentAssessmentScores,
       )..where((row) => row.assessmentId.equals(assessmentId))).get();
 
+  Future<List<StudentAssessmentScore>> getAssessmentScoresForAssessments(
+    Iterable<int> assessmentIds,
+  ) {
+    final ids = assessmentIds.toList();
+    if (ids.isEmpty) return Future.value(const []);
+    return (select(
+      studentAssessmentScores,
+    )..where((row) => row.assessmentId.isIn(ids))).get();
+  }
+
   Future<void> saveAssessmentScore({
     required int assessmentId,
     required int studentId,
@@ -693,6 +757,16 @@ class AppDatabase extends _$AppDatabase {
     studentAttendance,
   )..where((row) => row.attendanceSessionId.equals(attendanceSessionId))).get();
 
+  Future<List<StudentAttendanceData>> getStudentAttendanceForSessions(
+    Iterable<int> attendanceSessionIds,
+  ) {
+    final ids = attendanceSessionIds.toList();
+    if (ids.isEmpty) return Future.value(const []);
+    return (select(
+      studentAttendance,
+    )..where((row) => row.attendanceSessionId.isIn(ids))).get();
+  }
+
   Future<List<IndependentLearningRecord>> getIndependentLearningRecords({
     required int subjectId,
     required int gradingPeriodId,
@@ -771,6 +845,15 @@ class AppDatabase extends _$AppDatabase {
   ) => (select(
     studentIndependentLearningScores,
   )..where((row) => row.recordId.equals(recordId))).get();
+
+  Future<List<StudentIndependentLearningScore>>
+  getIndependentLearningScoresForRecords(Iterable<int> recordIds) {
+    final ids = recordIds.toList();
+    if (ids.isEmpty) return Future.value(const []);
+    return (select(
+      studentIndependentLearningScores,
+    )..where((row) => row.recordId.isIn(ids))).get();
+  }
 
   Future<int> createActivityLog({
     required String activity,

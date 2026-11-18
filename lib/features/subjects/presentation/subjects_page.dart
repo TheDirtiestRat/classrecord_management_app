@@ -215,171 +215,185 @@ class SubjectsPage extends ConsumerWidget {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) {
-          final semestersAsync = ref.watch(semestersProvider(yearId));
+          final screenSize = MediaQuery.sizeOf(dialogContext);
           return AlertDialog(
             title: Text(subject == null ? 'Add Subject' : 'Edit Subject'),
             content: SizedBox(
-              width: 620,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          flex: 2,
-                          child: TextField(
-                            controller: codeController,
-                            decoration: const InputDecoration(
-                              labelText: 'Subject Code',
-                            ),
-                          ),
+              width: screenSize.width > 684 ? 620 : screenSize.width - 64,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: screenSize.height * 0.7),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: codeController,
+                        decoration: const InputDecoration(
+                          labelText: 'Subject Code',
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          flex: 3,
-                          child: TextField(
-                            controller: unitsController,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Units',
-                            ),
-                          ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: unitsController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: 'Units'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: nameController,
+                        decoration: const InputDecoration(
+                          labelText: 'Subject Name',
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: nameController,
-                      decoration: const InputDecoration(
-                        labelText: 'Subject Name',
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: descriptionController,
-                      minLines: 2,
-                      maxLines: 3,
-                      decoration: const InputDecoration(
-                        labelText: 'Description',
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<int>(
+                        initialValue: yearId,
+                        decoration: const InputDecoration(
+                          labelText: 'Academic Year',
+                        ),
+                        items: years
+                            .map(
+                              (year) => DropdownMenuItem(
+                                value: year.id,
+                                child: Text(year.name),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() {
+                              yearId = value;
+                              semesterId = null;
+                            });
+                          }
+                        },
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<int>(
-                      initialValue: yearId,
-                      decoration: const InputDecoration(
-                        labelText: 'Academic Year',
-                      ),
-                      items: years
-                          .map(
-                            (year) => DropdownMenuItem(
-                              value: year.id,
-                              child: Text(year.name),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: (value) {
-                        if (value != null) {
-                          setDialogState(() {
-                            yearId = value;
-                            semesterId = null;
-                          });
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    semestersAsync.when(
-                      loading: () => const LinearProgressIndicator(),
-                      error: (error, stack) =>
-                          Text('Unable to load semesters: $error'),
-                      data: (semesters) {
-                        if (semesterId != null &&
-                            !semesters.any((item) => item.id == semesterId)) {
-                          semesterId = semesters.isEmpty
-                              ? null
-                              : semesters.first.id;
-                        }
-                        return DropdownButtonFormField<int>(
-                          initialValue: semesterId,
-                          decoration: const InputDecoration(
-                            labelText: 'Semester',
-                          ),
-                          items: semesters
-                              .map(
-                                (semester) => DropdownMenuItem(
-                                  value: semester.id,
-                                  child: Text(semester.name),
+                      const SizedBox(height: 12),
+                      Consumer(
+                        builder: (context, semesterRef, _) {
+                          final semestersAsync = semesterRef.watch(
+                            semestersProvider(yearId),
+                          );
+                          return semestersAsync.when(
+                            loading: () => const LinearProgressIndicator(),
+                            error: (error, stack) =>
+                                Text('Unable to load semesters: $error'),
+                            data: (semesters) {
+                              if (semesterId == null ||
+                                  !semesters.any(
+                                    (item) => item.id == semesterId,
+                                  )) {
+                                final activeSemesters = semesters
+                                    .where((semester) => semester.isActive)
+                                    .toList();
+                                semesterId = activeSemesters.isNotEmpty
+                                    ? activeSemesters.first.id
+                                    : semesters.isEmpty
+                                    ? null
+                                    : semesters.first.id;
+                              }
+                              return DropdownButtonFormField<int>(
+                                initialValue: semesterId,
+                                isExpanded: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Semester',
                                 ),
-                              )
-                              .toList(),
-                          onChanged: (value) =>
-                              setDialogState(() => semesterId = value),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<int?>(
-                      initialValue: sectionId,
-                      decoration: const InputDecoration(labelText: 'Section'),
-                      items: [
-                        const DropdownMenuItem<int?>(
-                          value: null,
-                          child: Text('No section'),
-                        ),
-                        ...sections.map(
-                          (section) => DropdownMenuItem<int?>(
-                            value: section.id,
-                            child: Text(section.name),
-                          ),
-                        ),
-                      ],
-                      onChanged: (value) =>
-                          setDialogState(() => sectionId = value),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<int?>(
-                      initialValue: instructorId,
-                      decoration: const InputDecoration(
-                        labelText: 'Instructor',
+                                hint: Text(
+                                  semesters.isEmpty
+                                      ? 'No semesters available'
+                                      : 'Select semester',
+                                ),
+                                items: semesters
+                                    .map(
+                                      (semester) => DropdownMenuItem(
+                                        value: semester.id,
+                                        child: Text(semester.name),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: semesters.isEmpty
+                                    ? null
+                                    : (value) => setDialogState(
+                                        () => semesterId = value,
+                                      ),
+                              );
+                            },
+                          );
+                        },
                       ),
-                      items: [
-                        const DropdownMenuItem<int?>(
-                          value: null,
-                          child: Text('No instructor'),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: descriptionController,
+                        minLines: 2,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Description',
                         ),
-                        ...instructors.map(
-                          (instructor) => DropdownMenuItem<int?>(
-                            value: instructor.id,
-                            child: Text(
-                              '${instructor.firstName} ${instructor.lastName}',
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<int?>(
+                        initialValue: sectionId,
+                        decoration: const InputDecoration(labelText: 'Section'),
+                        items: [
+                          const DropdownMenuItem<int?>(
+                            value: null,
+                            child: Text('No section'),
+                          ),
+                          ...sections.map(
+                            (section) => DropdownMenuItem<int?>(
+                              value: section.id,
+                              child: Text(section.name),
                             ),
                           ),
+                        ],
+                        onChanged: (value) =>
+                            setDialogState(() => sectionId = value),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<int?>(
+                        initialValue: instructorId,
+                        decoration: const InputDecoration(
+                          labelText: 'Instructor',
                         ),
-                      ],
-                      onChanged: (value) =>
-                          setDialogState(() => instructorId = value),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      initialValue: status,
-                      decoration: const InputDecoration(labelText: 'Status'),
-                      items: const [
-                        DropdownMenuItem(
-                          value: 'Active',
-                          child: Text('Active'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'Inactive',
-                          child: Text('Inactive'),
-                        ),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) {
-                          setDialogState(() => status = value);
-                        }
-                      },
-                    ),
-                  ],
+                        items: [
+                          const DropdownMenuItem<int?>(
+                            value: null,
+                            child: Text('No instructor'),
+                          ),
+                          ...instructors.map(
+                            (instructor) => DropdownMenuItem<int?>(
+                              value: instructor.id,
+                              child: Text(
+                                '${instructor.firstName} ${instructor.lastName}',
+                              ),
+                            ),
+                          ),
+                        ],
+                        onChanged: (value) =>
+                            setDialogState(() => instructorId = value),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        initialValue: status,
+                        decoration: const InputDecoration(labelText: 'Status'),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'Active',
+                            child: Text('Active'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'Inactive',
+                            child: Text('Inactive'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() => status = value);
+                          }
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -408,7 +422,10 @@ class SubjectsPage extends ConsumerWidget {
       if (saved == true && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Enter subject code, name, and semester.'),
+            content: Text(
+              'Enter the subject code and name, and choose a semester. '
+              'Add a semester first if none are available.',
+            ),
           ),
         );
       }

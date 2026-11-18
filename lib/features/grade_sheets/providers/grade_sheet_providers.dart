@@ -40,6 +40,64 @@ final gradeSheetIndependentProvider = FutureProvider.autoDispose
       );
     });
 
+final gradeSheetScoresProvider = FutureProvider.autoDispose
+    .family<GradeSheetScores, GradeSheetQuery>((ref, query) async {
+      final databaseFuture = ref.watch(appDatabaseProvider.future);
+      final assessmentsFuture = ref.watch(
+        gradeSheetAssessmentsProvider(query).future,
+      );
+      final attendanceFuture = ref.watch(
+        gradeSheetAttendanceProvider(query).future,
+      );
+      final independentFuture = ref.watch(
+        gradeSheetIndependentProvider(query).future,
+      );
+      final database = await databaseFuture;
+      final assessments = await assessmentsFuture;
+      final attendance = await attendanceFuture;
+      final independent = await independentFuture;
+      final assessmentScoresFuture = database.getAssessmentScoresForAssessments(
+        assessments.map((assessment) => assessment.id),
+      );
+      final attendanceScoresFuture = database.getStudentAttendanceForSessions(
+        attendance.map((session) => session.id),
+      );
+      final independentScoresFuture = database
+          .getIndependentLearningScoresForRecords(
+            independent.map((record) => record.id),
+          );
+      final assessmentScores = await assessmentScoresFuture;
+      final attendanceScores = await attendanceScoresFuture;
+      final independentScores = await independentScoresFuture;
+
+      return GradeSheetScores(
+        assessmentScores: {
+          for (final score in assessmentScores)
+            (score.assessmentId, score.studentId): score.score,
+        },
+        attendanceCodes: {
+          for (final record in attendanceScores)
+            (record.attendanceSessionId, record.studentId): record.code,
+        },
+        independentLearningScores: {
+          for (final score in independentScores)
+            (score.recordId, score.studentId): score.score,
+        },
+      );
+    });
+
+class GradeSheetScores {
+  const GradeSheetScores({
+    required this.assessmentScores,
+    required this.attendanceCodes,
+    required this.independentLearningScores,
+  });
+
+  final Map<(int, int), double?> assessmentScores;
+  final Map<(int, int), String> attendanceCodes;
+  final Map<(int, int), double?> independentLearningScores;
+}
+
 class GradeSheetQuery {
   const GradeSheetQuery({
     required this.subjectId,
