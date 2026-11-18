@@ -75,4 +75,79 @@ void main() {
     expect(values.valueFor('A'), 0);
     expect(values.valueFor('E'), 100);
   });
+
+  test('attendance values remain unconfigured until instructor sets them', () {
+    const values = AttendanceValues();
+
+    expect(values.valueFor('P').isNaN, isTrue);
+    expect(values.isConfigured, isFalse);
+    expect(AttendanceValues.decode(values.encode()).isConfigured, isFalse);
+  });
+
+  test('zero-weight components do not require scores', () {
+    final grade = service.computeTermGrade(
+      weights: const GradeWeights(
+        quizzes: 0,
+        attendance: 0,
+        work: 50,
+        majorExams: 50,
+        independentLearning: 0,
+      ),
+      quizzes: const [],
+      attendance: const [],
+      work: const [GradeComponentInput(earned: 45, possible: 50)],
+      majorExams: const [GradeComponentInput(earned: 90, possible: 100)],
+      independentLearning: const [],
+    );
+
+    expect(grade, 90);
+  });
+
+  test('rejects invalid component scores and invalid weight values', () {
+    final invalidScoreGrade = service.computeTermGrade(
+      weights: const GradeWeights(),
+      quizzes: const [GradeComponentInput(earned: 21, possible: 20)],
+      attendance: const [GradeComponentInput(earned: 100, possible: 100)],
+      work: const [GradeComponentInput(earned: 50, possible: 50)],
+      majorExams: const [GradeComponentInput(earned: 100, possible: 100)],
+      independentLearning: const [
+        GradeComponentInput(earned: 50, possible: 50),
+      ],
+    );
+    final invalidWeightsGrade = service.computeTermGrade(
+      weights: const GradeWeights(
+        quizzes: -10,
+        attendance: 10,
+        work: 20,
+        majorExams: 40,
+        independentLearning: 40,
+      ),
+      quizzes: const [GradeComponentInput(earned: 20, possible: 20)],
+      attendance: const [GradeComponentInput(earned: 100, possible: 100)],
+      work: const [GradeComponentInput(earned: 50, possible: 50)],
+      majorExams: const [GradeComponentInput(earned: 100, possible: 100)],
+      independentLearning: const [
+        GradeComponentInput(earned: 50, possible: 50),
+      ],
+    );
+
+    expect(invalidScoreGrade, isNull);
+    expect(invalidWeightsGrade, isNull);
+  });
+
+  test('incomplete assessment entries never produce a term grade', () {
+    final grade = service.computeTermGrade(
+      weights: const GradeWeights(),
+      isComplete: false,
+      quizzes: const [GradeComponentInput(earned: 10, possible: 10)],
+      attendance: const [GradeComponentInput(earned: 100, possible: 100)],
+      work: const [GradeComponentInput(earned: 50, possible: 50)],
+      majorExams: const [GradeComponentInput(earned: 100, possible: 100)],
+      independentLearning: const [
+        GradeComponentInput(earned: 50, possible: 50),
+      ],
+    );
+
+    expect(grade, isNull);
+  });
 }

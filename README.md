@@ -11,6 +11,9 @@ attendance, assessment, grade, ranking, and report management.
 - Phase 4: Student management and subject enrollment completed.
 - Phase 5: Grade sheet structure and score/attendance entry completed.
 - Phase 6: Grade computation, configurable weights, term grades, and rankings completed.
+- Phase 7: Academic reports, PDF generation, print preview, and CSV export completed.
+- Phase 8: Validated local database backup and safe restore completed.
+- Phase 9: Regression testing, Windows release build, and deployment notes completed.
 
 ## Database
 
@@ -31,3 +34,20 @@ flutter analyze
 flutter test
 flutter run -d windows
 ```
+
+## Windows release
+
+Build the release bundle with:
+
+```powershell
+flutter build windows --release
+```
+
+Distribute the **entire** `build\windows\x64\runner\Release\` directory, not
+only the executable; it contains the Flutter runtime and required assets.
+Launch `classrecord_management_app.exe`. User data remains in `%APPDATA%` and is
+not stored inside the release directory.
+
+Phase 9 regression tests cover database CRUD and persistence, score validation,
+missing-score handling, configurable attendance scoring, term calculations,
+tie rankings, report generation, and backup/restore validation.

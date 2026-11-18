@@ -32,10 +32,19 @@ part 'app_database.g.dart';
   ],
 )
 class AppDatabase extends _$AppDatabase {
+  bool _isClosed = false;
+
   AppDatabase(super.e);
 
   factory AppDatabase.openFile(String path) {
     return AppDatabase(NativeDatabase.createInBackground(File(path)));
+  }
+
+  @override
+  Future<void> close() async {
+    if (_isClosed) return;
+    _isClosed = true;
+    await super.close();
   }
 
   @override

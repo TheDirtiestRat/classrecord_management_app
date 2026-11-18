@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 class GradeWeights {
@@ -18,36 +19,68 @@ class GradeWeights {
   double get total =>
       quizzes + attendance + work + majorExams + independentLearning;
 
-  bool get isValid => (total - 100).abs() < 0.0001;
+  bool get isValid =>
+      [
+        quizzes,
+        attendance,
+        work,
+        majorExams,
+        independentLearning,
+      ].every((weight) => weight.isFinite && weight >= 0 && weight <= 100) &&
+      (total - 100).abs() < 0.0001;
 }
 
 class AttendanceValues {
-  const AttendanceValues({
-    this.present = 100,
-    this.late = 75,
-    this.absent = 0,
-    this.excused = 100,
-  });
+  const AttendanceValues({this.present, this.late, this.absent, this.excused});
 
-  final double present;
-  final double late;
-  final double absent;
-  final double excused;
+  final double? present;
+  final double? late;
+  final double? absent;
+  final double? excused;
+
+  bool get isConfigured => [present, late, absent, excused].every(
+    (value) => value != null && value.isFinite && value >= 0 && value <= 100,
+  );
 
   double valueFor(String code) {
     switch (code.toUpperCase()) {
       case 'P':
-        return present;
+        return present ?? double.nan;
       case 'L':
-        return late;
+        return late ?? double.nan;
       case 'A':
-        return absent;
+        return absent ?? double.nan;
       case 'E':
-        return excused;
+        return excused ?? double.nan;
       default:
         return double.nan;
     }
   }
+
+  factory AttendanceValues.decode(String? value) {
+    if (value == null || value.isEmpty) return const AttendanceValues();
+    final json = jsonDecode(value);
+    if (json is! Map<String, dynamic>) {
+      throw const FormatException(
+        'Attendance scoring settings must be an object.',
+      );
+    }
+
+    double? numberFor(String key) {
+      final item = json[key];
+      return item is num ? item.toDouble() : null;
+    }
+
+    return AttendanceValues(
+      present: numberFor('P'),
+      late: numberFor('L'),
+      absent: numberFor('A'),
+      excused: numberFor('E'),
+    );
+  }
+
+  String encode() =>
+      jsonEncode({'P': present, 'L': late, 'A': absent, 'E': excused});
 }
 
 class GradeComponentInput {
@@ -65,7 +98,13 @@ class GradeComputationService {
     var earned = 0.0;
     var possible = 0.0;
     for (final entry in entries) {
-      if (entry.possible <= 0) continue;
+      if (!entry.earned.isFinite ||
+          !entry.possible.isFinite ||
+          entry.possible <= 0 ||
+          entry.earned < 0 ||
+          entry.earned > entry.possible) {
+        return double.nan;
+      }
       earned += entry.earned;
       possible += entry.possible;
     }
@@ -75,6 +114,7 @@ class GradeComputationService {
 
   double? computeTermGrade({
     required GradeWeights weights,
+    bool isComplete = true,
     required List<GradeComponentInput> quizzes,
     required List<GradeComponentInput> attendance,
     required List<GradeComponentInput> work,
@@ -82,7 +122,12 @@ class GradeComputationService {
     required List<GradeComponentInput> independentLearning,
     int decimalPlaces = 2,
   }) {
-    if (!weights.isValid) return null;
+    if (!isComplete ||
+        !weights.isValid ||
+        decimalPlaces < 0 ||
+        decimalPlaces > 6) {
+      return null;
+    }
     final components = [
       percentage(quizzes),
       percentage(attendance),
@@ -90,13 +135,24 @@ class GradeComputationService {
       percentage(majorExams),
       percentage(independentLearning),
     ];
-    if (components.any((value) => value.isNaN)) return null;
-    final grade =
-        components[0] * weights.quizzes / 100 +
-        components[1] * weights.attendance / 100 +
-        components[2] * weights.work / 100 +
-        components[3] * weights.majorExams / 100 +
-        components[4] * weights.independentLearning / 100;
+    final componentWeights = [
+      weights.quizzes,
+      weights.attendance,
+      weights.work,
+      weights.majorExams,
+      weights.independentLearning,
+    ];
+    for (var index = 0; index < components.length; index++) {
+      if (componentWeights[index] > 0 && components[index].isNaN) {
+        return null;
+      }
+    }
+    var grade = 0.0;
+    for (var index = 0; index < components.length; index++) {
+      if (componentWeights[index] > 0) {
+        grade += components[index] * componentWeights[index] / 100;
+      }
+    }
     final factor = pow(10, decimalPlaces).toDouble();
     return (grade * factor).round() / factor;
   }

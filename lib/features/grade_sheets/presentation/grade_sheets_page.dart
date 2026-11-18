@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../core/database/database_provider.dart';
 import '../../../core/services/grade_computation_service.dart';
+import '../../../core/services/term_grade_calculation_service.dart';
 import '../../academic_management/providers/academic_management_providers.dart';
 import '../../students/providers/students_providers.dart';
 import '../providers/grade_sheet_providers.dart';
@@ -223,6 +224,14 @@ class GradeSheetGrid extends ConsumerWidget {
                                 configureWeights(context, ref, query),
                             icon: const Icon(Icons.tune, size: 18),
                             label: const Text('Grading Weights'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () => configureAttendance(context, ref),
+                            icon: const Icon(
+                              Icons.fact_check_outlined,
+                              size: 18,
+                            ),
+                            label: const Text('Attendance Scoring'),
                           ),
                           ElevatedButton.icon(
                             onPressed: () => computeGrades(context, ref, query),
@@ -788,134 +797,117 @@ Future<void> configureWeights(
   independent.dispose();
 }
 
+Future<void> configureAttendance(BuildContext context, WidgetRef ref) async {
+  final database = await ref.read(appDatabaseProvider.future);
+  final values = AttendanceValues.decode(
+    await database.getApplicationSetting('attendance_scoring'),
+  );
+  if (!context.mounted) return;
+
+  final present = TextEditingController(text: values.present?.toString() ?? '');
+  final late = TextEditingController(text: values.late?.toString() ?? '');
+  final absent = TextEditingController(text: values.absent?.toString() ?? '');
+  final excused = TextEditingController(text: values.excused?.toString() ?? '');
+  final saved = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Attendance Scoring Values'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Set each attendance code value from 0 to 100. '
+              'These values are not assumed by the application.',
+            ),
+            const SizedBox(height: 12),
+            for (final item in [
+              ('P - Present', present),
+              ('L - Late', late),
+              ('A - Absent', absent),
+              ('E - Excused', excused),
+            ]) ...[
+              TextField(
+                controller: item.$2,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(labelText: item.$1),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  final updatedValues = AttendanceValues(
+    present: double.tryParse(present.text.trim()),
+    late: double.tryParse(late.text.trim()),
+    absent: double.tryParse(absent.text.trim()),
+    excused: double.tryParse(excused.text.trim()),
+  );
+  if (saved == true && updatedValues.isConfigured) {
+    await database.saveApplicationSetting(
+      'attendance_scoring',
+      updatedValues.encode(),
+    );
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Attendance scoring values saved.')),
+      );
+    }
+  } else if (saved == true && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Enter a valid value from 0 to 100 for each code.'),
+      ),
+    );
+  }
+  present.dispose();
+  late.dispose();
+  absent.dispose();
+  excused.dispose();
+}
+
 Future<void> computeGrades(
   BuildContext context,
   WidgetRef ref,
   GradeSheetQuery query,
 ) async {
-  final database = await ref.read(appDatabaseProvider.future);
-  final students = await database.getEnrolledStudents(query.subjectId);
-  final assessments = await database.getAssessments(
-    subjectId: query.subjectId,
-    gradingPeriodId: query.gradingPeriodId,
-  );
-  final attendanceSessions = await database.getAttendanceSessions(
-    subjectId: query.subjectId,
-    gradingPeriodId: query.gradingPeriodId,
-  );
-  final independentRecords = await database.getIndependentLearningRecords(
-    subjectId: query.subjectId,
-    gradingPeriodId: query.gradingPeriodId,
-  );
-  final config = await database.getActiveGradingConfiguration(query.subjectId);
-  final weights = GradeWeights(
-    quizzes: config?.quizWeight ?? 20,
-    attendance: config?.attendanceWeight ?? 10,
-    work: config?.workWeight ?? 20,
-    majorExams: config?.majorExamWeight ?? 40,
-    independentLearning: config?.independentLearningWeight ?? 10,
-  );
-  const attendanceValues = AttendanceValues();
-  const computation = GradeComputationService();
-  final entries = <({int studentId, int rank, double grade})>[];
-
-  for (final student in students) {
-    final quizzes = <GradeComponentInput>[];
-    final work = <GradeComponentInput>[];
-    final exams = <GradeComponentInput>[];
-    for (final assessment in assessments) {
-      final scores = await database.getAssessmentScores(assessment.id);
-      final match = scores.where((score) => score.studentId == student.id);
-      if (match.isEmpty || match.first.score == null) continue;
-      final input = GradeComponentInput(
-        earned: match.first.score!,
-        possible: assessment.totalPossibleScore,
-      );
-      final type = assessment.type.toLowerCase();
-      if (type.contains('exam')) {
-        exams.add(input);
-      } else if (type.contains('quiz')) {
-        quizzes.add(input);
-      } else {
-        work.add(input);
-      }
-    }
-
-    final attendance = <GradeComponentInput>[];
-    for (final session in attendanceSessions) {
-      final records = await database.getStudentAttendance(session.id);
-      final match = records.where((record) => record.studentId == student.id);
-      final value = match.isEmpty
-          ? double.nan
-          : attendanceValues.valueFor(match.first.code);
-      if (!value.isNaN) {
-        attendance.add(GradeComponentInput(earned: value, possible: 100));
-      }
-    }
-
-    final independent = <GradeComponentInput>[];
-    for (final record in independentRecords) {
-      final scores = await database.getIndependentLearningScores(record.id);
-      final match = scores.where((score) => score.studentId == student.id);
-      if (match.isNotEmpty && match.first.score != null) {
-        independent.add(
-          GradeComponentInput(
-            earned: match.first.score!,
-            possible: record.totalPossibleScore,
-          ),
-        );
-      }
-    }
-
-    final grade = computation.computeTermGrade(
-      weights: weights,
-      quizzes: quizzes,
-      attendance: attendance,
-      work: work,
-      majorExams: exams,
-      independentLearning: independent,
-      decimalPlaces: config?.decimalPlaces ?? 2,
-    );
-    await database.saveTermGrade(
+  try {
+    final database = await ref.read(appDatabaseProvider.future);
+    final result = await const TermGradeCalculationService().computeAndSave(
+      database: database,
       subjectId: query.subjectId,
-      studentId: student.id,
       gradingPeriodId: query.gradingPeriodId,
-      grade: grade,
     );
-    if (grade != null) {
-      entries.add((studentId: student.id, rank: 0, grade: grade));
-    }
-  }
-
-  final rankingInput = entries
-      .map(
-        (entry) => GradeRankingEntry(
-          studentId: entry.studentId,
-          studentName: '',
-          grade: entry.grade,
-        ),
-      )
-      .toList();
-  final ranked = GradeComputationService.rankEntries(rankingInput);
-  await database.replaceRankings(
-    subjectId: query.subjectId,
-    gradingPeriodId: query.gradingPeriodId,
-    rankings: ranked
-        .map(
-          (entry) => (
-            studentId: entry.studentId,
-            rank: entry.rank!,
-            grade: entry.grade,
-          ),
-        )
-        .toList(),
-  );
-  if (context.mounted) {
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Grades computed for ${entries.length} complete student records.',
+          'Grades computed: ${result.completedGrades} complete, '
+          '${result.incompleteGrades} incomplete.',
         ),
+      ),
+    );
+  } catch (error) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Unable to compute grades: $error'),
+        backgroundColor: AppColors.red,
       ),
     );
   }

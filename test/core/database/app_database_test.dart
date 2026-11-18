@@ -231,4 +231,73 @@ void main() {
     expect(records, hasLength(1));
     expect(records.single.code, 'P');
   });
+
+  test('persists grading settings, term grades, and rankings', () async {
+    final yearId = await database.createAcademicYear('2026-2027');
+    final semesterId = await database.createSemester(
+      academicYearId: yearId,
+      name: 'First Semester',
+    );
+    final subjectId = await database.createSubject(
+      code: 'IT101',
+      name: 'Introduction to Computing',
+      academicYearId: yearId,
+      semesterId: semesterId,
+    );
+    final studentId = await database.createStudent(
+      studentNumber: '2026-300',
+      firstName: 'Nina',
+      lastName: 'Lopez',
+    );
+    final period = (await database.getGradingPeriods()).first;
+
+    await database.saveGradingConfiguration(
+      subjectId: subjectId,
+      quizWeight: 25,
+      attendanceWeight: 5,
+      workWeight: 20,
+      majorExamWeight: 40,
+      independentLearningWeight: 10,
+      decimalPlaces: 1,
+    );
+    await database.saveApplicationSetting(
+      'attendance_scoring',
+      '{"P":100,"L":80,"A":0,"E":100}',
+    );
+    await database.saveTermGrade(
+      subjectId: subjectId,
+      studentId: studentId,
+      gradingPeriodId: period.id,
+      grade: 87.5,
+    );
+    await database.saveTermGrade(
+      subjectId: subjectId,
+      studentId: studentId,
+      gradingPeriodId: period.id,
+      grade: 88,
+    );
+    await database.replaceRankings(
+      subjectId: subjectId,
+      gradingPeriodId: period.id,
+      rankings: [(studentId: studentId, rank: 1, grade: 88)],
+    );
+
+    final config = await database.getActiveGradingConfiguration(subjectId);
+    final setting = await database.getApplicationSetting('attendance_scoring');
+    final grades = await database.getTermGrades(
+      subjectId: subjectId,
+      gradingPeriodId: period.id,
+    );
+    final rankings = await database.getRankings(
+      subjectId: subjectId,
+      gradingPeriodId: period.id,
+    );
+
+    expect(config?.quizWeight, 25);
+    expect(config?.decimalPlaces, 1);
+    expect(setting, '{"P":100,"L":80,"A":0,"E":100}');
+    expect(grades, hasLength(1));
+    expect(grades.single.grade, 88);
+    expect(rankings.single.rank, 1);
+  });
 }
