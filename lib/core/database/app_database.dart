@@ -347,6 +347,165 @@ class AppDatabase extends _$AppDatabase {
   Future<int> deleteSubject(int id) =>
       (delete(subjects)..where((row) => row.id.equals(id))).go();
 
+  Future<List<Student>> getAllStudents() =>
+      (select(students)..orderBy([
+            (row) => OrderingTerm(expression: row.lastName),
+            (row) => OrderingTerm(expression: row.firstName),
+          ]))
+          .get();
+
+  Future<int> createStudent({
+    required String studentNumber,
+    required String firstName,
+    String middleName = '',
+    required String lastName,
+    String suffix = '',
+    String? gender,
+    String? email,
+    String? contactNumber,
+    String course = '',
+    int? yearLevel,
+    int? sectionId,
+    String status = 'Active',
+  }) {
+    final now = DateTime.now().toIso8601String();
+    return into(students).insert(
+      StudentsCompanion.insert(
+        studentNumber: studentNumber,
+        firstName: firstName,
+        middleName: Value(middleName),
+        lastName: lastName,
+        suffix: Value(suffix),
+        gender: Value(gender),
+        email: Value(email),
+        contactNumber: Value(contactNumber),
+        course: Value(course),
+        yearLevel: Value(yearLevel),
+        sectionId: Value(sectionId),
+        status: Value(status),
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+  }
+
+  Future<bool> updateStudent({
+    required int id,
+    required String studentNumber,
+    required String firstName,
+    String middleName = '',
+    required String lastName,
+    String suffix = '',
+    String? gender,
+    String? email,
+    String? contactNumber,
+    String course = '',
+    int? yearLevel,
+    int? sectionId,
+    String status = 'Active',
+  }) async {
+    final count = await (update(students)..where((row) => row.id.equals(id)))
+        .write(
+          StudentsCompanion(
+            studentNumber: Value(studentNumber),
+            firstName: Value(firstName),
+            middleName: Value(middleName),
+            lastName: Value(lastName),
+            suffix: Value(suffix),
+            gender: Value(gender),
+            email: Value(email),
+            contactNumber: Value(contactNumber),
+            course: Value(course),
+            yearLevel: Value(yearLevel),
+            sectionId: Value(sectionId),
+            status: Value(status),
+            updatedAt: Value(DateTime.now().toIso8601String()),
+          ),
+        );
+    return count == 1;
+  }
+
+  Future<int> deleteStudent(int id) =>
+      (delete(students)..where((row) => row.id.equals(id))).go();
+
+  Future<int> findOrCreateStudentFromCsv({
+    required String studentNumber,
+    required String firstName,
+    String middleName = '',
+    required String lastName,
+    String suffix = '',
+    String course = '',
+    int? yearLevel,
+  }) async {
+    final existing =
+        await (select(students)
+              ..where((row) => row.studentNumber.equals(studentNumber))
+              ..limit(1))
+            .get();
+    if (existing.isNotEmpty) {
+      return existing.first.id;
+    }
+    return createStudent(
+      studentNumber: studentNumber,
+      firstName: firstName,
+      middleName: middleName,
+      lastName: lastName,
+      suffix: suffix,
+      course: course,
+      yearLevel: yearLevel,
+    );
+  }
+
+  Future<int> enrollStudent({
+    required int subjectId,
+    required int studentId,
+  }) async {
+    final existing =
+        await (select(subjectEnrollments)
+              ..where(
+                (row) =>
+                    row.subjectId.equals(subjectId) &
+                    row.studentId.equals(studentId),
+              )
+              ..limit(1))
+            .get();
+    if (existing.isNotEmpty) {
+      return existing.first.id;
+    }
+    return into(subjectEnrollments).insert(
+      SubjectEnrollmentsCompanion.insert(
+        subjectId: subjectId,
+        studentId: studentId,
+        enrolledAt: DateTime.now().toIso8601String(),
+      ),
+    );
+  }
+
+  Future<int> unenrollStudent({
+    required int subjectId,
+    required int studentId,
+  }) =>
+      (delete(subjectEnrollments)..where(
+            (row) =>
+                row.subjectId.equals(subjectId) &
+                row.studentId.equals(studentId),
+          ))
+          .go();
+
+  Future<List<Student>> getEnrolledStudents(int subjectId) async {
+    final query = select(students).join([
+      innerJoin(
+        subjectEnrollments,
+        subjectEnrollments.studentId.equalsExp(students.id),
+      ),
+    ]);
+    query
+      ..where(subjectEnrollments.subjectId.equals(subjectId))
+      ..orderBy([OrderingTerm(expression: students.lastName)]);
+    final rows = await query.get();
+    return rows.map((row) => row.readTable(students)).toList();
+  }
+
   Future<int> createActivityLog({
     required String activity,
     String details = '',

@@ -8,6 +8,7 @@ attendance, assessment, grade, ranking, and report management.
 - Phase 1: Desktop navigation and dashboard foundation completed.
 - Phase 2: Drift/SQLite database foundation completed.
 - Phase 3: Academic and subject management completed.
+- Phase 4: Student management and subject enrollment completed.
 
 ## Database
 

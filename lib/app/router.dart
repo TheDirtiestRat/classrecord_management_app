@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import '../features/academic_management/presentation/academic_management_page.dart';
 import '../features/dashboard/presentation/dashboard_page.dart';
 import '../features/shared/presentation/module_placeholder_page.dart';
+import '../features/students/presentation/students_page.dart';
 import '../features/subjects/presentation/subjects_page.dart';
 import '../shared/widgets/app_shell.dart';
 
@@ -30,6 +31,11 @@ class AppRouter {
             pageBuilder: (context, state) =>
                 const NoTransitionPage(child: SubjectsPage()),
           ),
+          GoRoute(
+            path: '/students',
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: StudentsPage()),
+          ),
           ..._moduleRoutes(),
         ],
       ),
@@ -38,7 +44,6 @@ class AppRouter {
 
   static List<GoRoute> _moduleRoutes() {
     const modules = <String, String>{
-      '/students': 'Students',
       '/grade-sheets': 'Grade Sheets',
       '/attendance': 'Attendance',
       '/rankings': 'Rankings',

@@ -102,4 +102,52 @@ void main() {
     expect(school?.schoolName, 'Example College');
     expect(school?.address, 'Test Address');
   });
+
+  test('creates a student and prevents duplicate subject enrollment', () async {
+    final yearId = await database.createAcademicYear('2026-2027');
+    final semesterId = await database.createSemester(
+      academicYearId: yearId,
+      name: 'First Semester',
+    );
+    final subjectId = await database.createSubject(
+      code: 'IT101',
+      name: 'Introduction to Computing',
+      academicYearId: yearId,
+      semesterId: semesterId,
+    );
+    final studentId = await database.createStudent(
+      studentNumber: '2026-0001',
+      firstName: 'Juan',
+      lastName: 'Dela Cruz',
+      course: 'BSIT',
+      yearLevel: 1,
+    );
+
+    await database.enrollStudent(subjectId: subjectId, studentId: studentId);
+    await database.enrollStudent(subjectId: subjectId, studentId: studentId);
+
+    final students = await database.getAllStudents();
+    final enrolled = await database.getEnrolledStudents(subjectId);
+    expect(students.single.studentNumber, '2026-0001');
+    expect(enrolled, hasLength(1));
+    expect(enrolled.single.id, studentId);
+  });
+
+  test('CSV import helper does not duplicate student numbers', () async {
+    await database.findOrCreateStudentFromCsv(
+      studentNumber: '2026-100',
+      firstName: 'Maria',
+      lastName: 'Santos',
+      course: 'BSIT',
+    );
+    await database.findOrCreateStudentFromCsv(
+      studentNumber: '2026-100',
+      firstName: 'Maria',
+      lastName: 'Santos',
+      course: 'BSIT',
+    );
+
+    final students = await database.getAllStudents();
+    expect(students, hasLength(1));
+  });
 }
