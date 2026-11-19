@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:two_dimensional_scrollables/two_dimensional_scrollables.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../core/database/app_database.dart';
@@ -182,8 +183,13 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
     with AutomaticKeepAliveClientMixin {
   final _tableScrollController = ScrollController();
   final _tableVerticalScrollController = ScrollController();
+  final _cellFocusNodes = <(int, int), FocusNode>{};
   final _pendingGradeQueries = <GradeSheetQuery>{};
   final _pendingSubjects = <int>{};
+  (int, int)? _pendingFocusCell;
+  List<double> _tableColumnWidths = const [];
+  int _currentPage = 0;
+  int _pageSize = 25;
   bool _pendingAllSubjects = false;
   Future<void>? _gradeRecalculation;
 
@@ -194,7 +200,97 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
   void dispose() {
     _tableScrollController.dispose();
     _tableVerticalScrollController.dispose();
+    for (final focusNode in _cellFocusNodes.values) {
+      focusNode.dispose();
+    }
     super.dispose();
+  }
+
+  FocusNode _focusNodeFor(int studentIndex, int columnIndex) =>
+      _cellFocusNodes.putIfAbsent((studentIndex, columnIndex), FocusNode.new);
+
+  Future<void> _navigateToCell(
+    int studentIndex,
+    int columnIndex,
+    int studentCount,
+    int editableColumnCount,
+  ) async {
+    if (studentIndex < 0 ||
+        studentIndex >= studentCount ||
+        columnIndex < 1 ||
+        columnIndex > editableColumnCount) {
+      return;
+    }
+
+    final target = (studentIndex, columnIndex);
+    _pendingFocusCell = target;
+    final targetPage = studentIndex ~/ _pageSize;
+    setState(() => _currentPage = targetPage);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _pendingFocusCell != target) return;
+      _scrollToCell(studentIndex % _pageSize, columnIndex);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _focusPendingCell(target);
+      });
+    });
+  }
+
+  void _scrollToCell(int localRow, int columnIndex) {
+    if (_tableVerticalScrollController.hasClients) {
+      final position = _tableVerticalScrollController.position;
+      final top = localRow * 44.0;
+      final bottom = top + 44.0;
+      final visibleHeight = (position.viewportDimension - 58.0).clamp(
+        0.0,
+        double.infinity,
+      );
+      var offset = position.pixels;
+      if (top < offset) {
+        offset = top;
+      } else if (bottom > offset + visibleHeight) {
+        offset = bottom - visibleHeight;
+      }
+      offset = offset.clamp(0.0, position.maxScrollExtent);
+      if (offset != position.pixels) {
+        _tableVerticalScrollController.jumpTo(offset);
+      }
+    }
+
+    if (_tableScrollController.hasClients &&
+        _tableColumnWidths.isNotEmpty &&
+        columnIndex < _tableColumnWidths.length) {
+      final position = _tableScrollController.position;
+      final pinnedWidth = _tableColumnWidths[0];
+      final regularColIndex =
+          (columnIndex - 1).clamp(0, _tableColumnWidths.length - 1);
+      final left = _tableColumnWidths
+          .skip(1)
+          .take(regularColIndex)
+          .fold<double>(0, (total, width) => total + width);
+      final right = left + _tableColumnWidths[columnIndex];
+      final visibleWidth = (position.viewportDimension - pinnedWidth).clamp(
+        0.0,
+        double.infinity,
+      );
+      var offset = position.pixels;
+      if (left < offset) {
+        offset = left;
+      } else if (right > offset + visibleWidth) {
+        offset = right - visibleWidth;
+      }
+      offset = offset.clamp(0.0, position.maxScrollExtent);
+      if (offset != position.pixels) {
+        _tableScrollController.jumpTo(offset);
+      }
+    }
+  }
+
+  void _focusPendingCell((int, int) target) {
+    if (!mounted || _pendingFocusCell != target) return;
+    final focusNode = _cellFocusNodes[target];
+    if (focusNode?.context == null) return;
+    _pendingFocusCell = null;
+    focusNode!.requestFocus();
   }
 
   void _showSaveError(Object error) {
@@ -445,412 +541,569 @@ class _GradeSheetGridState extends ConsumerState<GradeSheetGrid>
                                 const attendanceWidth = 92.0;
                                 const independentWidth = 138.0;
                                 const computedGradeWidth = 112.0;
+                                final pageCount = (students.length / _pageSize)
+                                    .ceil();
+                                if (_currentPage >= pageCount) {
+                                  _currentPage = pageCount - 1;
+                                }
+                                final pageStart = _currentPage * _pageSize;
+                                final pageStudents = students
+                                    .skip(pageStart)
+                                    .take(_pageSize)
+                                    .toList();
                                 final minimumTableWidth =
                                     studentWidth +
                                     assessments.length * assessmentWidth +
                                     attendance.length * attendanceWidth +
                                     independent.length * independentWidth +
                                     computedGradeWidth;
-                                final tableWidth =
+                                final columnCount =
+                                    2 +
+                                    assessments.length +
+                                    attendance.length +
+                                    independent.length;
+                                final extraColumnWidth =
                                     constraints.maxWidth > minimumTableWidth
-                                    ? constraints.maxWidth
-                                    : minimumTableWidth;
+                                    ? (constraints.maxWidth -
+                                              minimumTableWidth) /
+                                          columnCount
+                                    : 0.0;
+                                final columnWidths = <double>[
+                                  studentWidth + extraColumnWidth,
+                                  ...List<double>.filled(
+                                    assessments.length,
+                                    assessmentWidth + extraColumnWidth,
+                                  ),
+                                  ...List<double>.filled(
+                                    attendance.length,
+                                    attendanceWidth + extraColumnWidth,
+                                  ),
+                                  ...List<double>.filled(
+                                    independent.length,
+                                    independentWidth + extraColumnWidth,
+                                  ),
+                                  computedGradeWidth + extraColumnWidth,
+                                ];
+                                _tableColumnWidths = columnWidths;
+                                final assessmentStart = 1;
+                                final attendanceStart =
+                                    assessmentStart + assessments.length;
+                                final independentStart =
+                                    attendanceStart + attendance.length;
+                                final gradeColumn =
+                                    independentStart + independent.length;
+                                final editableColumnCount = gradeColumn - 1;
 
-                                return Scrollbar(
-                                  controller: _tableScrollController,
-                                  thumbVisibility: true,
-                                  notificationPredicate: (notification) =>
-                                      notification.metrics.axis ==
-                                      Axis.horizontal,
-                                  child: SingleChildScrollView(
-                                    controller: _tableScrollController,
-                                    scrollDirection: Axis.horizontal,
-                                    child: SizedBox(
-                                      width: tableWidth,
+                                Widget borderedCell(
+                                  Widget child, {
+                                  Alignment alignment = Alignment.centerLeft,
+                                  EdgeInsets padding =
+                                      const EdgeInsets.symmetric(horizontal: 8),
+                                  Color? color,
+                                }) => Container(
+                                  alignment: alignment,
+                                  padding: padding,
+                                  decoration: BoxDecoration(
+                                    color: color,
+                                    border: Border(
+                                      right: BorderSide(
+                                        color: AppColors.border,
+                                        width: 0.6,
+                                      ),
+                                      bottom: BorderSide(
+                                        color: AppColors.border,
+                                        width: 0.6,
+                                      ),
+                                    ),
+                                  ),
+                                  child: child,
+                                );
+
+                                Widget headerCell(int column) {
+                                  if (column == 0) {
+                                    return borderedCell(
+                                      const Text(
+                                        'Student',
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      color: AppColors.background,
+                                    );
+                                  }
+                                  if (column < attendanceStart) {
+                                    final assessment =
+                                        assessments[column - assessmentStart];
+                                    return borderedCell(
+                                      PopupMenuButton<_AssessmentHeaderAction>(
+                                        padding: EdgeInsets.zero,
+                                        tooltip: 'Assessment options',
+                                        onSelected: (action) {
+                                          if (action ==
+                                              _AssessmentHeaderAction.edit) {
+                                            editAssessment(
+                                              context,
+                                              ref,
+                                              query,
+                                              assessment,
+                                              onSaved: () => _recalculateGrades(
+                                                database,
+                                                query: query,
+                                              ),
+                                            );
+                                          } else {
+                                            deleteAssessment(
+                                              context,
+                                              ref,
+                                              query,
+                                              assessment,
+                                              onSaved: () => _recalculateGrades(
+                                                database,
+                                                query: query,
+                                              ),
+                                            );
+                                          }
+                                        },
+                                        itemBuilder: (context) => const [
+                                          PopupMenuItem(
+                                            value: _AssessmentHeaderAction.edit,
+                                            child: Text('Edit assessment'),
+                                          ),
+                                          PopupMenuItem(
+                                            value:
+                                                _AssessmentHeaderAction.delete,
+                                            child: Text('Delete assessment'),
+                                          ),
+                                        ],
+                                        child: Row(
+                                          children: [
+                                            Expanded(
+                                              child: Column(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.center,
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    assessment.name,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                  Text(
+                                                    '${assessment.type} / ${assessment.totalPossibleScore}',
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color: AppColors
+                                                          .textSecondary,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            const Icon(
+                                              Icons.more_vert,
+                                              size: 18,
+                                              color: AppColors.textSecondary,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                      ),
+                                      color: AppColors.background,
+                                    );
+                                  }
+                                  if (column < independentStart) {
+                                    final session =
+                                        attendance[column - attendanceStart];
+                                    return borderedCell(
+                                      Text(
+                                        session.sessionDate,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      color: AppColors.background,
+                                    );
+                                  }
+                                  if (column < gradeColumn) {
+                                    final record =
+                                        independent[column - independentStart];
+                                    return borderedCell(
+                                      Text(
+                                        record.activityName,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      color: AppColors.background,
+                                    );
+                                  }
+                                  return borderedCell(
+                                    const Text(
+                                      'Grade',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    color: AppColors.background,
+                                  );
+                                }
+
+                                Widget dataCell(int row, int column) {
+                                  final student = pageStudents[row];
+                                  final studentIndex = pageStart + row;
+                                  if (column == 0) {
+                                    return borderedCell(
+                                      Text(
+                                        '${student.lastName}, ${student.firstName}',
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      color: AppColors.white,
+                                    );
+                                  }
+                                  if (column < attendanceStart) {
+                                    final assessment =
+                                        assessments[column - assessmentStart];
+                                    final target = (studentIndex, column);
+                                    final focusNode = _focusNodeFor(
+                                      studentIndex,
+                                      column,
+                                    );
+                                    if (_pendingFocusCell == target) {
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback(
+                                            (_) => _focusPendingCell(target),
+                                          );
+                                    }
+                                    return borderedCell(
+                                      _GradeScoreInput(
+                                        key: ValueKey(
+                                          'assessment-${assessment.id}-${student.id}',
+                                        ),
+                                        focusNode: focusNode,
+                                        initialScore:
+                                            scores.assessmentScores[(
+                                              assessment.id,
+                                              student.id,
+                                            )],
+                                        maximum: assessment.totalPossibleScore,
+                                        onNavigate: (rowDelta, columnDelta) =>
+                                            _navigateToCell(
+                                              studentIndex + rowDelta,
+                                              column + columnDelta,
+                                              students.length,
+                                              editableColumnCount,
+                                            ),
+                                        onSave: (score) async {
+                                          await database.saveAssessmentScore(
+                                            assessmentId: assessment.id,
+                                            studentId: student.id,
+                                            score: score,
+                                          );
+                                          await _recalculateGrades(
+                                            database,
+                                            query: query,
+                                          );
+                                        },
+                                        onSaveError: _showSaveError,
+                                      ),
+                                      alignment: Alignment.center,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 4,
+                                      ),
+                                    );
+                                  }
+                                  if (column < independentStart) {
+                                    final session =
+                                        attendance[column - attendanceStart];
+                                    final target = (studentIndex, column);
+                                    final focusNode = _focusNodeFor(
+                                      studentIndex,
+                                      column,
+                                    );
+                                    if (_pendingFocusCell == target) {
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback(
+                                            (_) => _focusPendingCell(target),
+                                          );
+                                    }
+                                    return borderedCell(
+                                      _AttendanceCodeInput(
+                                        key: ValueKey(
+                                          'attendance-${session.id}-${student.id}',
+                                        ),
+                                        focusNode: focusNode,
+                                        onNavigate: (rowDelta, columnDelta) =>
+                                            _navigateToCell(
+                                              studentIndex + rowDelta,
+                                              column + columnDelta,
+                                              students.length,
+                                              editableColumnCount,
+                                            ),
+                                        initialCode:
+                                            scores.attendanceCodes[(
+                                              session.id,
+                                              student.id,
+                                            )],
+                                        onSave: (code) async {
+                                          await database.saveAttendanceCode(
+                                            attendanceSessionId: session.id,
+                                            studentId: student.id,
+                                            code: code,
+                                          );
+                                          await _recalculateGrades(
+                                            database,
+                                            query: query,
+                                          );
+                                        },
+                                        onSaveError: _showSaveError,
+                                      ),
+                                      alignment: Alignment.center,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 4,
+                                      ),
+                                    );
+                                  }
+                                  if (column < gradeColumn) {
+                                    final record =
+                                        independent[column - independentStart];
+                                    final target = (studentIndex, column);
+                                    final focusNode = _focusNodeFor(
+                                      studentIndex,
+                                      column,
+                                    );
+                                    if (_pendingFocusCell == target) {
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback(
+                                            (_) => _focusPendingCell(target),
+                                          );
+                                    }
+                                    return borderedCell(
+                                      _GradeScoreInput(
+                                        key: ValueKey(
+                                          'independent-${record.id}-${student.id}',
+                                        ),
+                                        focusNode: focusNode,
+                                        initialScore:
+                                            scores.independentLearningScores[(
+                                              record.id,
+                                              student.id,
+                                            )],
+                                        maximum: record.totalPossibleScore,
+                                        onNavigate: (rowDelta, columnDelta) =>
+                                            _navigateToCell(
+                                              studentIndex + rowDelta,
+                                              column + columnDelta,
+                                              students.length,
+                                              editableColumnCount,
+                                            ),
+                                        onSave: (score) async {
+                                          await database
+                                              .saveIndependentLearningScore(
+                                                recordId: record.id,
+                                                studentId: student.id,
+                                                score: score,
+                                              );
+                                          await _recalculateGrades(
+                                            database,
+                                            query: query,
+                                          );
+                                        },
+                                        onSaveError: _showSaveError,
+                                      ),
+                                      alignment: Alignment.center,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 4,
+                                      ),
+                                    );
+                                  }
+                                  return borderedCell(
+                                    Text(
+                                      switch (scores.termGrades[student.id]) {
+                                        null => 'Not computed',
+                                        final termGrade =>
+                                          termGrade.grade?.toStringAsFixed(2) ??
+                                              'Incomplete',
+                                      },
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    alignment: Alignment.center,
+                                    color: AppColors.background,
+                                  );
+                                }
+
+                                return Column(
+                                  children: [
+                                    Expanded(
                                       child: Scrollbar(
-                                        controller:
-                                            _tableVerticalScrollController,
+                                        controller: _tableScrollController,
                                         thumbVisibility: true,
+                                        trackVisibility: true,
+                                        interactive: true,
+                                        scrollbarOrientation:
+                                            ScrollbarOrientation.bottom,
                                         notificationPredicate: (notification) =>
                                             notification.metrics.axis ==
-                                            Axis.vertical,
-                                        child: SingleChildScrollView(
+                                            Axis.horizontal,
+                                        child: Scrollbar(
                                           controller:
                                               _tableVerticalScrollController,
-                                          child: DataTable(
-                                            showCheckboxColumn: false,
-                                            horizontalMargin: 0,
-                                            columnSpacing: 0,
-                                            headingRowHeight: 58,
-                                            dataRowMinHeight: 44,
-                                            dataRowMaxHeight: 44,
-                                            dividerThickness: 0,
-                                            border: TableBorder.all(
-                                              color: AppColors.border,
-                                              width: 0.6,
+                                          thumbVisibility: true,
+                                          trackVisibility: true,
+                                          interactive: true,
+                                          scrollbarOrientation:
+                                              ScrollbarOrientation.right,
+                                          notificationPredicate:
+                                              (notification) =>
+                                                  notification.metrics.axis ==
+                                                  Axis.vertical,
+                                          child: TableView.builder(
+                                            columnCount: columnWidths.length,
+                                            rowCount: pageStudents.length + 1,
+                                            pinnedRowCount: 1,
+                                            pinnedColumnCount: 1,
+                                            horizontalDetails:
+                                                ScrollableDetails.horizontal(
+                                                  controller:
+                                                      _tableScrollController,
+                                                ),
+                                            verticalDetails:
+                                                ScrollableDetails.vertical(
+                                                  controller:
+                                                      _tableVerticalScrollController,
+                                                ),
+                                            columnBuilder: (column) =>
+                                                TableSpan(
+                                                  extent: FixedTableSpanExtent(
+                                                    columnWidths[column],
+                                                  ),
+                                                ),
+                                            rowBuilder: (row) => TableSpan(
+                                              extent: FixedTableSpanExtent(
+                                                row == 0 ? 58 : 44,
+                                              ),
                                             ),
-                                            columns: [
-                                              const DataColumn(
-                                                label: SizedBox(
-                                                  width: studentWidth,
-                                                  child: Padding(
-                                                    padding:
-                                                        EdgeInsets.symmetric(
-                                                          horizontal: 8,
+                                            cellBuilder: (context, vicinity) =>
+                                                TableViewCell(
+                                                  child: vicinity.row == 0
+                                                      ? headerCell(
+                                                          vicinity.column,
+                                                        )
+                                                      : dataCell(
+                                                          vicinity.row - 1,
+                                                          vicinity.column,
                                                         ),
-                                                    child: Text('Student'),
-                                                  ),
                                                 ),
-                                              ),
-                                              for (final assessment
-                                                  in assessments)
-                                                DataColumn(
-                                                  label: SizedBox(
-                                                    width: assessmentWidth,
-                                                    child: PopupMenuButton<_AssessmentHeaderAction>(
-                                                      tooltip:
-                                                          'Assessment options',
-                                                      onSelected: (action) {
-                                                        if (action ==
-                                                            _AssessmentHeaderAction
-                                                                .edit) {
-                                                          editAssessment(
-                                                            context,
-                                                            ref,
-                                                            query,
-                                                            assessment,
-                                                            onSaved: () =>
-                                                                _recalculateGrades(
-                                                                  database,
-                                                                  query: query,
-                                                                ),
-                                                          );
-                                                        } else {
-                                                          deleteAssessment(
-                                                            context,
-                                                            ref,
-                                                            query,
-                                                            assessment,
-                                                            onSaved: () =>
-                                                                _recalculateGrades(
-                                                                  database,
-                                                                  query: query,
-                                                                ),
-                                                          );
-                                                        }
-                                                      },
-                                                      itemBuilder: (context) => [
-                                                        const PopupMenuItem(
-                                                          value:
-                                                              _AssessmentHeaderAction
-                                                                  .edit,
-                                                          child: Text(
-                                                            'Edit assessment',
-                                                          ),
-                                                        ),
-                                                        const PopupMenuItem(
-                                                          value:
-                                                              _AssessmentHeaderAction
-                                                                  .delete,
-                                                          child: Text(
-                                                            'Delete assessment',
-                                                          ),
-                                                        ),
-                                                      ],
-                                                      child: Padding(
-                                                        padding:
-                                                            const EdgeInsets.symmetric(
-                                                              horizontal: 8,
-                                                            ),
-                                                        child: Row(
-                                                          children: [
-                                                            Expanded(
-                                                              child: Column(
-                                                                mainAxisAlignment:
-                                                                    MainAxisAlignment
-                                                                        .center,
-                                                                crossAxisAlignment:
-                                                                    CrossAxisAlignment
-                                                                        .start,
-                                                                children: [
-                                                                  Text(
-                                                                    assessment
-                                                                        .name,
-                                                                    overflow:
-                                                                        TextOverflow
-                                                                            .ellipsis,
-                                                                  ),
-                                                                  Text(
-                                                                    '${assessment.type} / ${assessment.totalPossibleScore}',
-                                                                    style: const TextStyle(
-                                                                      fontSize:
-                                                                          11,
-                                                                      color: AppColors
-                                                                          .textSecondary,
-                                                                    ),
-                                                                  ),
-                                                                ],
-                                                              ),
-                                                            ),
-                                                            const Icon(
-                                                              Icons.more_vert,
-                                                              size: 18,
-                                                              color: AppColors
-                                                                  .textSecondary,
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                              for (final session in attendance)
-                                                DataColumn(
-                                                  label: SizedBox(
-                                                    width: attendanceWidth,
-                                                    child: Padding(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            horizontal: 8,
-                                                          ),
-                                                      child: Text(
-                                                        session.sessionDate,
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                              for (final record in independent)
-                                                DataColumn(
-                                                  label: SizedBox(
-                                                    width: independentWidth,
-                                                    child: Padding(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            horizontal: 8,
-                                                          ),
-                                                      child: Text(
-                                                        record.activityName,
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                              const DataColumn(
-                                                label: SizedBox(
-                                                  width: computedGradeWidth,
-                                                  child: Padding(
-                                                    padding:
-                                                        EdgeInsets.symmetric(
-                                                          horizontal: 8,
-                                                        ),
-                                                    child: Text('Grade'),
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                            rows: [
-                                              for (final student in students)
-                                                DataRow(
-                                                  key: ValueKey(student.id),
-                                                  cells: [
-                                                    DataCell(
-                                                      SizedBox(
-                                                        width: studentWidth,
-                                                        child: Padding(
-                                                          padding:
-                                                              const EdgeInsets.symmetric(
-                                                                horizontal: 8,
-                                                              ),
-                                                          child: Text(
-                                                            '${student.lastName}, ${student.firstName}',
-                                                            overflow:
-                                                                TextOverflow
-                                                                    .ellipsis,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    for (final assessment
-                                                        in assessments)
-                                                      DataCell(
-                                                        SizedBox(
-                                                          width:
-                                                              assessmentWidth,
-                                                          height: 40,
-                                                          child: Padding(
-                                                            padding:
-                                                                const EdgeInsets.symmetric(
-                                                                  horizontal: 4,
-                                                                ),
-                                                            child: _GradeScoreInput(
-                                                              key: ValueKey(
-                                                                'assessment-${assessment.id}-${student.id}',
-                                                              ),
-                                                              initialScore:
-                                                                  scores
-                                                                      .assessmentScores[(
-                                                                    assessment
-                                                                        .id,
-                                                                    student.id,
-                                                                  )],
-                                                              maximum: assessment
-                                                                  .totalPossibleScore,
-                                                              onSave: (score) async {
-                                                                await database.saveAssessmentScore(
-                                                                  assessmentId:
-                                                                      assessment
-                                                                          .id,
-                                                                  studentId:
-                                                                      student
-                                                                          .id,
-                                                                  score: score,
-                                                                );
-                                                                await _recalculateGrades(
-                                                                  database,
-                                                                  query: query,
-                                                                );
-                                                              },
-                                                              onSaveError:
-                                                                  _showSaveError,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    for (final session
-                                                        in attendance)
-                                                      DataCell(
-                                                        SizedBox(
-                                                          width:
-                                                              attendanceWidth,
-                                                          height: 40,
-                                                          child: Padding(
-                                                            padding:
-                                                                const EdgeInsets.symmetric(
-                                                                  horizontal: 4,
-                                                                ),
-                                                            child: _AttendanceCodeInput(
-                                                              key: ValueKey(
-                                                                'attendance-${session.id}-${student.id}',
-                                                              ),
-                                                              initialCode:
-                                                                  scores
-                                                                      .attendanceCodes[(
-                                                                    session.id,
-                                                                    student.id,
-                                                                  )],
-                                                              onSave: (code) async {
-                                                                await database.saveAttendanceCode(
-                                                                  attendanceSessionId:
-                                                                      session
-                                                                          .id,
-                                                                  studentId:
-                                                                      student
-                                                                          .id,
-                                                                  code: code,
-                                                                );
-                                                                await _recalculateGrades(
-                                                                  database,
-                                                                  query: query,
-                                                                );
-                                                              },
-                                                              onSaveError:
-                                                                  _showSaveError,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    for (final record
-                                                        in independent)
-                                                      DataCell(
-                                                        SizedBox(
-                                                          width:
-                                                              independentWidth,
-                                                          height: 40,
-                                                          child: Padding(
-                                                            padding:
-                                                                const EdgeInsets.symmetric(
-                                                                  horizontal: 4,
-                                                                ),
-                                                            child: _GradeScoreInput(
-                                                              key: ValueKey(
-                                                                'independent-${record.id}-${student.id}',
-                                                              ),
-                                                              initialScore:
-                                                                  scores
-                                                                      .independentLearningScores[(
-                                                                    record.id,
-                                                                    student.id,
-                                                                  )],
-                                                              maximum: record
-                                                                  .totalPossibleScore,
-                                                              onSave: (score) async {
-                                                                await database
-                                                                    .saveIndependentLearningScore(
-                                                                      recordId:
-                                                                          record
-                                                                              .id,
-                                                                      studentId:
-                                                                          student
-                                                                              .id,
-                                                                      score:
-                                                                          score,
-                                                                    );
-                                                                await _recalculateGrades(
-                                                                  database,
-                                                                  query: query,
-                                                                );
-                                                              },
-                                                              onSaveError:
-                                                                  _showSaveError,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    DataCell(
-                                                      SizedBox(
-                                                        width:
-                                                            computedGradeWidth,
-                                                        height: 40,
-                                                        child: Container(
-                                                          alignment:
-                                                              Alignment.center,
-                                                          color: AppColors
-                                                              .background,
-                                                          child: Text(
-                                                            switch (scores
-                                                                .termGrades[student
-                                                                .id]) {
-                                                              null =>
-                                                                'Not computed',
-                                                              final termGrade =>
-                                                                termGrade.grade
-                                                                        ?.toStringAsFixed(
-                                                                          2,
-                                                                        ) ??
-                                                                    'Incomplete',
-                                                            },
-                                                            style: const TextStyle(
-                                                              color: AppColors
-                                                                  .textSecondary,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                            ],
                                           ),
                                         ),
                                       ),
                                     ),
-                                  ),
+                                    const SizedBox(height: 8),
+                                    Wrap(
+                                      crossAxisAlignment:
+                                          WrapCrossAlignment.center,
+                                      spacing: 8,
+                                      runSpacing: 4,
+                                      children: [
+                                        Text(
+                                          'Page ${_currentPage + 1} of $pageCount '
+                                          '(${students.length} students)',
+                                          style: const TextStyle(
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                        const Text('Rows per page:'),
+                                        DropdownButton<int>(
+                                          value: _pageSize,
+                                          isDense: true,
+                                          items: const [
+                                            DropdownMenuItem(
+                                              value: 10,
+                                              child: Text('10'),
+                                            ),
+                                            DropdownMenuItem(
+                                              value: 25,
+                                              child: Text('25'),
+                                            ),
+                                            DropdownMenuItem(
+                                              value: 50,
+                                              child: Text('50'),
+                                            ),
+                                            DropdownMenuItem(
+                                              value: 100,
+                                              child: Text('100'),
+                                            ),
+                                          ],
+                                          onChanged: (value) {
+                                            if (value == null) return;
+                                            setState(() {
+                                              _pageSize = value;
+                                              _currentPage = 0;
+                                              _pendingFocusCell = null;
+                                            });
+                                            WidgetsBinding.instance
+                                                .addPostFrameCallback((_) {
+                                                  if (_tableVerticalScrollController
+                                                      .hasClients) {
+                                                    _tableVerticalScrollController
+                                                        .jumpTo(0);
+                                                  }
+                                                });
+                                          },
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Previous page',
+                                          onPressed: _currentPage > 0
+                                              ? () {
+                                                  setState(
+                                                    () => _currentPage--,
+                                                  );
+                                                  WidgetsBinding.instance
+                                                      .addPostFrameCallback((
+                                                        _,
+                                                      ) {
+                                                        if (_tableVerticalScrollController
+                                                            .hasClients) {
+                                                          _tableVerticalScrollController
+                                                              .jumpTo(0);
+                                                        }
+                                                      });
+                                                }
+                                              : null,
+                                          icon: const Icon(Icons.chevron_left),
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Next page',
+                                          onPressed:
+                                              _currentPage + 1 < pageCount
+                                              ? () {
+                                                  setState(
+                                                    () => _currentPage++,
+                                                  );
+                                                  WidgetsBinding.instance
+                                                      .addPostFrameCallback((
+                                                        _,
+                                                      ) {
+                                                        if (_tableVerticalScrollController
+                                                            .hasClients) {
+                                                          _tableVerticalScrollController
+                                                              .jumpTo(0);
+                                                        }
+                                                      });
+                                                }
+                                              : null,
+                                          icon: const Icon(Icons.chevron_right),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 );
                               },
                             ),
@@ -873,6 +1126,8 @@ class _GradeScoreInput extends StatefulWidget {
   const _GradeScoreInput({
     required this.initialScore,
     required this.maximum,
+    required this.focusNode,
+    required this.onNavigate,
     required this.onSave,
     required this.onSaveError,
     super.key,
@@ -880,6 +1135,8 @@ class _GradeScoreInput extends StatefulWidget {
 
   final double? initialScore;
   final double maximum;
+  final FocusNode focusNode;
+  final Future<void> Function(int rowDelta, int columnDelta) onNavigate;
   final Future<void> Function(double? score) onSave;
   final void Function(Object error) onSaveError;
 
@@ -898,6 +1155,7 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
   bool _hasInvalidInput = false;
   bool _saveFailed = false;
   bool _justSaved = false;
+  bool _isEditing = false;
   int _savingCount = 0;
 
   @override
@@ -955,6 +1213,7 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
   void _handleChange(String text) {
     _debounceTimer?.cancel();
     setState(() {
+      _isEditing = true;
       _hasInvalidInput = !_isValid(text);
       _isDirty =
           !_hasInvalidInput &&
@@ -972,14 +1231,23 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
     }
   }
 
-  Future<void> _saveValue(double? value, {bool updateUi = true}) async {
+  Future<bool> _saveValue(double? value, {bool updateUi = true}) async {
     _debounceTimer?.cancel();
     final latestValue = _savingCount > 0 ? _latestScheduledValue : _lastSaved;
-    if (_hasInvalidInput || value == latestValue) {
+    if (_hasInvalidInput) return false;
+    if (value == latestValue) {
+      if (_savingCount > 0) {
+        try {
+          await _saveQueue;
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
       if (updateUi && mounted && !_hasInvalidInput) {
         setState(() => _isDirty = false);
       }
-      return;
+      return true;
     }
 
     _latestScheduledValue = value;
@@ -1004,6 +1272,7 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
           if (mounted) setState(() => _justSaved = false);
         });
       }
+      return true;
     } catch (error) {
       if (updateUi && mounted) {
         setState(() {
@@ -1012,74 +1281,152 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
         });
       }
       widget.onSaveError(error);
+      return false;
     } finally {
       if (updateUi && mounted) setState(() => _savingCount--);
     }
   }
 
+  Future<void> _commitAndNavigate(int rowDelta, int columnDelta) async {
+    if (_hasInvalidInput) return;
+    if (!await _saveValue(_readValue())) return;
+    if (!mounted) return;
+    setState(() => _isEditing = false);
+    await widget.onNavigate(rowDelta, columnDelta);
+  }
+
+  void _cancelEdit() {
+    _debounceTimer?.cancel();
+    setState(() {
+      _controller.text = _formatScore(_lastSaved);
+      _controller.selection = TextSelection.collapsed(
+        offset: _controller.text.length,
+      );
+      _isDirty = false;
+      _hasInvalidInput = false;
+      _saveFailed = false;
+      _justSaved = false;
+      _isEditing = false;
+    });
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      unawaited(_commitAndNavigate(1, 0));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.escape) {
+      _cancelEdit();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.tab) {
+      unawaited(
+        _commitAndNavigate(
+          0,
+          HardwareKeyboard.instance.isShiftPressed ? -1 : 1,
+        ),
+      );
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      unawaited(_commitAndNavigate(-1, 0));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      unawaited(_commitAndNavigate(1, 0));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight) {
+      final selection = _controller.selection;
+      final isLeft = key == LogicalKeyboardKey.arrowLeft;
+      final canMoveCursor =
+          _isEditing &&
+          selection.isValid &&
+          (!selection.isCollapsed ||
+              (isLeft
+                  ? selection.extentOffset > 0
+                  : selection.extentOffset < _controller.text.length));
+      if (canMoveCursor) return KeyEventResult.ignored;
+      unawaited(_commitAndNavigate(0, isLeft ? -1 : 1));
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: _controller,
-      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-      textAlign: TextAlign.center,
-      inputFormatters: [
-        FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*$')),
-      ],
-      decoration: InputDecoration(
-        isDense: true,
-        filled: true,
-        fillColor: AppColors.paleGreen,
-        hintText: 'Missing',
-        contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
-        border: const OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
-          borderSide: BorderSide(color: AppColors.border),
+    return Focus(
+      canRequestFocus: false,
+      onKeyEvent: _handleKeyEvent,
+      child: TextField(
+        focusNode: widget.focusNode,
+        controller: _controller,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        textInputAction: TextInputAction.done,
+        textAlign: TextAlign.center,
+        inputFormatters: [
+          FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*$')),
+        ],
+        decoration: InputDecoration(
+          isDense: true,
+          filled: true,
+          fillColor: AppColors.paleGreen,
+          hintText: 'Missing',
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 6,
+            vertical: 10,
+          ),
+          border: const OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: BorderSide(color: AppColors.border),
+          ),
+          enabledBorder: const OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: BorderSide(color: AppColors.border),
+          ),
+          focusedBorder: const OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: BorderSide(color: AppColors.primary, width: 1.5),
+          ),
+          suffixIconConstraints: const BoxConstraints(
+            minWidth: 22,
+            minHeight: 22,
+          ),
+          suffixIcon: _savingCount > 0
+              ? const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : _hasInvalidInput || _saveFailed
+              ? Tooltip(
+                  message: _hasInvalidInput
+                      ? 'Enter a score from 0 to ${widget.maximum}.'
+                      : 'This value could not be saved.',
+                  child: const Icon(
+                    Icons.error_outline,
+                    size: 16,
+                    color: AppColors.red,
+                  ),
+                )
+              : _justSaved
+              ? const Tooltip(
+                  message: 'Saved',
+                  child: Icon(
+                    Icons.check_circle_outline,
+                    size: 16,
+                    color: AppColors.primary,
+                  ),
+                )
+              : null,
         ),
-        enabledBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
-          borderSide: BorderSide(color: AppColors.border),
-        ),
-        focusedBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
-          borderSide: BorderSide(color: AppColors.primary, width: 1.5),
-        ),
-        suffixIconConstraints: const BoxConstraints(
-          minWidth: 22,
-          minHeight: 22,
-        ),
-        suffixIcon: _savingCount > 0
-            ? const Padding(
-                padding: EdgeInsets.all(4),
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : _hasInvalidInput || _saveFailed
-            ? Tooltip(
-                message: _hasInvalidInput
-                    ? 'Enter a score from 0 to ${widget.maximum}.'
-                    : 'This value could not be saved.',
-                child: const Icon(
-                  Icons.error_outline,
-                  size: 16,
-                  color: AppColors.red,
-                ),
-              )
-            : _justSaved
-            ? const Tooltip(
-                message: 'Saved',
-                child: Icon(
-                  Icons.check_circle_outline,
-                  size: 16,
-                  color: AppColors.primary,
-                ),
-              )
-            : null,
+        onTap: () => setState(() => _isEditing = true),
+        onChanged: _handleChange,
+        onEditingComplete: () {},
       ),
-      onChanged: _handleChange,
-      onEditingComplete: () {
-        unawaited(_saveValue(_readValue()));
-        FocusScope.of(context).nextFocus();
-      },
     );
   }
 }
@@ -1087,12 +1434,16 @@ class _GradeScoreInputState extends State<_GradeScoreInput> {
 class _AttendanceCodeInput extends StatefulWidget {
   const _AttendanceCodeInput({
     required this.initialCode,
+    required this.focusNode,
+    required this.onNavigate,
     required this.onSave,
     required this.onSaveError,
     super.key,
   });
 
   final String? initialCode;
+  final FocusNode focusNode;
+  final Future<void> Function(int rowDelta, int columnDelta) onNavigate;
   final Future<void> Function(String code) onSave;
   final void Function(Object error) onSaveError;
 
@@ -1105,11 +1456,15 @@ class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
   bool _saving = false;
   bool _justSaved = false;
   Timer? _savedIndicatorTimer;
+  late Future<bool> _pendingSave;
+  String? _lastSaved;
 
   @override
   void initState() {
     super.initState();
     _value = widget.initialCode;
+    _lastSaved = widget.initialCode;
+    _pendingSave = Future<bool>.value(true);
   }
 
   @override
@@ -1117,6 +1472,7 @@ class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
     super.didUpdateWidget(oldWidget);
     if (widget.initialCode != oldWidget.initialCode && !_saving) {
       _value = widget.initialCode;
+      _lastSaved = widget.initialCode;
     }
   }
 
@@ -1126,8 +1482,8 @@ class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
     super.dispose();
   }
 
-  Future<void> _save(String? code) async {
-    if (code == null || code == _value) return;
+  Future<bool> _save(String? code) async {
+    if (code == null || code == _value) return true;
     final previousValue = _value;
     setState(() {
       _value = code;
@@ -1137,12 +1493,14 @@ class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
     _savedIndicatorTimer?.cancel();
     try {
       await widget.onSave(code);
+      _lastSaved = code;
       if (mounted) {
         setState(() => _justSaved = true);
         _savedIndicatorTimer = Timer(const Duration(seconds: 1), () {
           if (mounted) setState(() => _justSaved = false);
         });
       }
+      return true;
     } catch (error) {
       if (mounted) {
         setState(() {
@@ -1151,58 +1509,123 @@ class _AttendanceCodeInputState extends State<_AttendanceCodeInput> {
         });
       }
       widget.onSaveError(error);
+      return false;
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
+  Future<void> _commitAndNavigate(int rowDelta, int columnDelta) async {
+    if (!await _pendingSave) return;
+    await widget.onNavigate(rowDelta, columnDelta);
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _value = _lastSaved;
+      _justSaved = false;
+    });
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      unawaited(_commitAndNavigate(1, 0));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.escape) {
+      _cancelEdit();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.tab) {
+      unawaited(
+        _commitAndNavigate(
+          0,
+          HardwareKeyboard.instance.isShiftPressed ? -1 : 1,
+        ),
+      );
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      unawaited(_commitAndNavigate(-1, 0));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      unawaited(_commitAndNavigate(1, 0));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      unawaited(_commitAndNavigate(0, -1));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      unawaited(_commitAndNavigate(0, 1));
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return DropdownButtonFormField<String>(
-      key: ValueKey(_value),
-      initialValue: _value,
-      isExpanded: true,
-      isDense: true,
-      decoration: InputDecoration(
+    return Focus(
+      canRequestFocus: false,
+      onKeyEvent: _handleKeyEvent,
+      child: DropdownButtonFormField<String>(
+        key: ValueKey(_value),
+        focusNode: widget.focusNode,
+        initialValue: _value,
+        isExpanded: true,
         isDense: true,
-        filled: true,
-        fillColor: AppColors.paleGreen,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-        border: const OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
-          borderSide: BorderSide(color: AppColors.border),
+        decoration: InputDecoration(
+          isDense: true,
+          filled: true,
+          fillColor: AppColors.paleGreen,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 6,
+            vertical: 8,
+          ),
+          border: const OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: BorderSide(color: AppColors.border),
+          ),
+          enabledBorder: const OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: BorderSide(color: AppColors.border),
+          ),
+          focusedBorder: const OutlineInputBorder(
+            borderRadius: BorderRadius.zero,
+            borderSide: BorderSide(color: AppColors.primary, width: 1.5),
+          ),
+          suffixIcon: _saving
+              ? const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : _justSaved
+              ? const Tooltip(
+                  message: 'Saved',
+                  child: Icon(
+                    Icons.check_circle_outline,
+                    size: 16,
+                    color: AppColors.primary,
+                  ),
+                )
+              : null,
         ),
-        enabledBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
-          borderSide: BorderSide(color: AppColors.border),
-        ),
-        focusedBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.zero,
-          borderSide: BorderSide(color: AppColors.primary, width: 1.5),
-        ),
-        suffixIcon: _saving
-            ? const Padding(
-                padding: EdgeInsets.all(8),
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : _justSaved
-            ? const Tooltip(
-                message: 'Saved',
-                child: Icon(
-                  Icons.check_circle_outline,
-                  size: 16,
-                  color: AppColors.primary,
-                ),
-              )
-            : null,
+        items: const [
+          DropdownMenuItem(value: 'P', child: Text('P')),
+          DropdownMenuItem(value: 'L', child: Text('L')),
+          DropdownMenuItem(value: 'A', child: Text('A')),
+          DropdownMenuItem(value: 'E', child: Text('E')),
+        ],
+        onChanged: _saving
+            ? null
+            : (code) {
+                _pendingSave = _save(code);
+              },
       ),
-      items: const [
-        DropdownMenuItem(value: 'P', child: Text('P')),
-        DropdownMenuItem(value: 'L', child: Text('L')),
-        DropdownMenuItem(value: 'A', child: Text('A')),
-        DropdownMenuItem(value: 'E', child: Text('E')),
-      ],
-      onChanged: _saving ? null : _save,
     );
   }
 }
